@@ -1,9 +1,14 @@
-# Asclepius — your personal Apple Health advisor
+# Asclepius — your personal AI health coach
 
-Asclepius is a **private, local** web app that ingests your own Apple Health
-export and gives you an AI health advisor (powered by Claude) that analyzes
-your **sleep, activity & fitness, heart health, and body & vitals** — grounded
-in your real numbers, not generic advice.
+Asclepius is a **private, local** web app that turns your own Apple Health
+export into a proactive AI health **coach** (powered by Claude). It reads your
+real data, tells you what matters, builds you a concrete plan, and coaches you
+toward the optimal version of yourself — across **sleep, activity & fitness,
+heart health, and body & vitals**.
+
+It's agent-first: the whole experience is a conversation with a coach plus a
+**living plan** it maintains for you — not a metrics dashboard (you already have
+those in the Health app).
 
 > ⚕️ Asclepius is not a doctor and does not provide medical diagnosis. It's a
 > tool for understanding your own data. For medical concerns, consult a
@@ -11,19 +16,23 @@ in your real numbers, not generic advice.
 
 ## What it does
 
-- **Parses your Apple Health export** (`export.xml`, even multi-hundred-MB ones)
-  into clean daily summaries — steps, distance, active energy, exercise time,
-  heart rate, resting HR, HRV, VO₂ max, blood pressure, weight, BMI, body fat,
-  blood oxygen, respiratory rate, sleep stages, and workouts.
-- **Dashboard** with headline cards, trends, a sleep panel, and a workout
-  breakdown.
-- **Metric explorer** to chart any metric over 30 days → all time.
-- **Advisor chat**: ask questions in plain English. Claude (Opus 4.8, with
-  adaptive thinking) uses tools to query your actual data — summaries, trends,
-  and time series — before answering, and cites your real values.
+- **Proactive briefing**: on first load it reads across your data, tells you
+  what stands out, what's going well, and the few things most worth improving —
+  then builds your initial plan.
+- **Living plan**: a goal, 2–4 focus areas, and concrete weekly actions with
+  targets tied to your numbers (e.g. "raise average sleep 6.9h → 7.5h"). The
+  coach saves and revises it over time and checks your progress against it.
+- **Coaching chat**: ask anything ("how's my sleep affecting recovery?", "what
+  should I focus on this week?"). Claude (Opus 4.8, adaptive thinking) uses
+  tools to query your actual data — summaries, trends, time series, sleep,
+  workouts — before answering, and cites your real values.
+- **Streaming parser** for the Apple Health `export.xml` (even multi-hundred-MB
+  ones) → clean daily summaries of steps, distance, energy, exercise time, heart
+  rate, resting HR, HRV, VO₂ max, blood pressure, weight, BMI, body fat, blood
+  oxygen, respiratory rate, sleep stages, and workouts.
 
 Everything runs on your machine. Your health data never leaves it except for
-the compact summaries the advisor sends to the Claude API when you chat.
+the compact summaries the coach sends to the Claude API when it reasons.
 
 ## Getting your Apple Health data
 
@@ -63,21 +72,24 @@ Upload `data/sample_export.xml` in the app.
 backend/
   config.py      Metric definitions (HK types → friendly keys, units, areas)
   parser.py      Streaming iterparse of export.xml → daily aggregates
-  store.py       SQLite persistence
-  analytics.py   Trends, summaries, time series (powers dashboard + advisor)
-  advisor.py     Claude tool-use loop, grounded in your data
+  store.py       SQLite persistence (data + the living plan)
+  analytics.py   Trends, summaries, time series the coach reasons over
+  advisor.py     The coach: Claude tool-use loop + plan tools + briefing
   main.py        FastAPI app + static frontend
-frontend/        Single-page dashboard + chat (vanilla JS + Chart.js)
+frontend/        Single-page coach: conversation + plan panel (vanilla JS)
+  vendor/        Locally-served marked.js (no runtime CDN)
 scripts/         Synthetic-data generator
 tests/           Pipeline tests
 ```
 
 - **Backend**: FastAPI + SQLite (no heavy data deps).
 - **AI**: Anthropic Python SDK, model `claude-opus-4-8`, adaptive thinking,
-  `effort: high`. The advisor has tools (`get_metric_summary`,
+  `effort: high`. The coach has tools to read data (`get_metric_summary`,
   `get_metric_timeseries`, `get_sleep_summary`, `get_workouts_summary`,
-  `list_metrics`) and is also seeded with a compact data digest each turn.
-- **Frontend**: dependency-free vanilla JS, Chart.js via CDN.
+  `list_metrics`) and to maintain the plan (`get_plan`, `save_plan`), and is
+  seeded with a compact data digest + the current plan each turn.
+- **Frontend**: dependency-free vanilla JS; markdown rendered with a locally
+  vendored marked.js so the app runs fully offline.
 
 ## Configuration
 

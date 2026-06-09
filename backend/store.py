@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- The single living health plan the coach maintains for the user.
+CREATE TABLE IF NOT EXISTS plan (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    goal       TEXT,
+    focus      TEXT,   -- JSON array of focus areas
+    content    TEXT,   -- markdown plan body
+    updated_at TEXT
+);
 """
 
 
@@ -104,6 +113,42 @@ def has_data(db_path: Path | None = None) -> bool:
     with connect(db_path) as conn:
         row = conn.execute("SELECT COUNT(*) AS n FROM daily_metrics").fetchone()
         return row["n"] > 0
+
+
+def save_plan(goal: str, focus: list[str], content: str,
+              db_path: Path | None = None) -> dict:
+    """Create or replace the user's living health plan."""
+    import datetime as _dt
+    init_db(db_path)
+    now = _dt.datetime.now().isoformat(timespec="seconds")
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO plan (id, goal, focus, content, updated_at) "
+            "VALUES (1, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET goal=excluded.goal, "
+            "focus=excluded.focus, content=excluded.content, "
+            "updated_at=excluded.updated_at",
+            (goal, json.dumps(focus or []), content, now),
+        )
+    return get_plan(db_path)
+
+
+def get_plan(db_path: Path | None = None) -> dict | None:
+    init_db(db_path)
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM plan WHERE id = 1").fetchone()
+    if not row:
+        return None
+    try:
+        focus = json.loads(row["focus"]) if row["focus"] else []
+    except (json.JSONDecodeError, TypeError):
+        focus = []
+    return {
+        "goal": row["goal"],
+        "focus": focus,
+        "content": row["content"],
+        "updated_at": row["updated_at"],
+    }
 
 
 def get_meta(db_path: Path | None = None) -> dict:

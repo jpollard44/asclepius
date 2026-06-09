@@ -1,7 +1,7 @@
 """Asclepius web app: upload Apple Health data and chat with your advisor."""
 from __future__ import annotations
 
-import shutil
+import os
 import tempfile
 from pathlib import Path
 
@@ -51,13 +51,16 @@ async def upload(file: UploadFile) -> JSONResponse:
 
 @app.get("/api/status")
 def status() -> dict:
+    advisor_ready = bool(os.environ.get("ANTHROPIC_API_KEY"))
     if not store.has_data():
-        return {"has_data": False}
+        return {"has_data": False, "advisor_ready": advisor_ready}
     return {
         "has_data": True,
+        "advisor_ready": advisor_ready,
         "date_range": analytics.date_range(),
         "meta": store.get_meta(),
         "metrics": analytics.available_metrics(),
+        "plan": store.get_plan(),
     }
 
 
@@ -122,7 +125,23 @@ def chat(req: ChatRequest) -> dict:
         result = advisor.chat(history)
     except advisor.AdvisorError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
-    return {"reply": result["reply"]}
+    return {"reply": result["reply"], "plan": store.get_plan()}
+
+
+@app.post("/api/briefing")
+def briefing() -> dict:
+    """Proactive opening briefing from the coach (also builds the initial plan)."""
+    _require_data()
+    try:
+        result = advisor.briefing()
+    except advisor.AdvisorError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {"reply": result["reply"], "plan": store.get_plan()}
+
+
+@app.get("/api/plan")
+def plan() -> dict:
+    return {"plan": store.get_plan()}
 
 
 # ---------------------------------------------------------------------------
