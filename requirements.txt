@@ -1,0 +1,6 @@
+# Pinned to floors verified working for this app (adaptive thinking +
+# output_config require a recent Anthropic SDK).
+anthropic>=0.109
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.12

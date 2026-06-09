@@ -1,0 +1,139 @@
+:root {
+  --bg: #f3f5f4;
+  --surface: #ffffff;
+  --ink: #1d2b2a;
+  --muted: #6c807d;
+  --line: #dfe6e4;
+  --teal: #0f8f86;
+  --teal-deep: #0a6b64;
+  --coral: #e1654f;
+  --shadow: 0 1px 2px rgba(16, 40, 38, .06), 0 8px 24px rgba(16, 40, 38, .06);
+  --radius: 14px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; height: 100vh; display: flex; flex-direction: column;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--ink); line-height: 1.55;
+}
+.hidden { display: none !important; }
+.muted { color: var(--muted); }
+
+/* Top bar */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 24px; background: var(--surface); border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+.brand { display: flex; align-items: center; gap: 13px; }
+.mark {
+  width: 42px; height: 42px; display: grid; place-items: center;
+  background: linear-gradient(135deg, var(--teal), var(--teal-deep));
+  color: #fff; border-radius: 12px; font-size: 23px;
+}
+.topbar h1 { margin: 0; font-size: 19px; letter-spacing: -.3px; }
+.tagline { margin: 0; font-size: 13px; color: var(--muted); }
+.ghost-btn {
+  border: 1px solid var(--line); background: var(--surface); color: var(--muted);
+  padding: 8px 16px; border-radius: 999px; cursor: pointer; font-size: 14px;
+}
+.ghost-btn:hover { border-color: var(--teal); color: var(--teal-deep); }
+.ghost-btn.small { padding: 5px 12px; font-size: 13px; }
+
+/* Onboarding */
+.upload-view { flex: 1; overflow-y: auto; display: grid; place-items: center; padding: 24px; }
+.upload-card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 34px; box-shadow: var(--shadow); max-width: 640px;
+}
+.upload-card h2 { margin-top: 0; }
+.lead { color: var(--ink); }
+.steps { color: var(--ink); padding-left: 20px; }
+.steps li { margin: 7px 0; }
+code { background: #eef3f2; padding: 1px 6px; border-radius: 6px; font-size: 13px; }
+.dropzone {
+  margin-top: 22px; display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 40px; border: 2px dashed var(--line); border-radius: var(--radius);
+  cursor: pointer; transition: border-color .15s, background .15s; text-align: center;
+}
+.dropzone:hover, .dropzone.drag { border-color: var(--teal); background: #f0f8f6; }
+.dz-icon { font-size: 28px; color: var(--teal); }
+.dz-text { font-weight: 500; }
+.dz-hint { font-size: 13px; color: var(--muted); }
+.upload-status { margin-top: 16px; font-size: 14px; }
+.upload-status.error { color: var(--coral); }
+.upload-status.ok { color: var(--teal-deep); }
+
+/* Coach layout */
+.coach {
+  flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 360px;
+  gap: 18px; padding: 18px; max-width: 1240px; width: 100%; margin: 0 auto;
+}
+.conversation { display: flex; flex-direction: column; min-height: 0; }
+.chat-log {
+  flex: 1; min-height: 0; overflow-y: auto; background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 22px;
+  display: flex; flex-direction: column; gap: 16px; box-shadow: var(--shadow);
+}
+.msg { max-width: 86%; padding: 13px 17px; border-radius: 16px; font-size: 15px; }
+.msg.user { align-self: flex-end; background: var(--teal); color: #fff; border-bottom-right-radius: 5px; }
+.msg.assistant { align-self: flex-start; background: #eef3f2; color: var(--ink); border-bottom-left-radius: 5px; }
+.msg.assistant.error { background: #fdece8; color: var(--coral); }
+.msg.thinking { color: var(--muted); font-style: italic; }
+/* Markdown inside coach messages */
+.msg.assistant h1, .msg.assistant h2, .msg.assistant h3 { font-size: 16px; margin: 12px 0 6px; }
+.msg.assistant p { margin: 8px 0; }
+.msg.assistant ul, .msg.assistant ol { margin: 8px 0; padding-left: 20px; }
+.msg.assistant li { margin: 3px 0; }
+.msg.assistant strong { color: var(--teal-deep); }
+.msg.assistant :first-child { margin-top: 0; }
+.msg.assistant :last-child { margin-bottom: 0; }
+
+.dots::after { content: "…"; animation: dots 1.4s steps(4, end) infinite; }
+@keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+
+.suggestions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.chip {
+  border: 1px solid var(--line); background: var(--surface); color: var(--teal-deep);
+  padding: 7px 14px; border-radius: 999px; cursor: pointer; font-size: 13px;
+}
+.chip:hover { border-color: var(--teal); background: #f0f8f6; }
+.chat-form { display: flex; gap: 10px; }
+.chat-form input {
+  flex: 1; padding: 13px 16px; border-radius: 12px; border: 1px solid var(--line);
+  font-size: 15px; background: var(--surface);
+}
+.chat-form button {
+  padding: 0 22px; border-radius: 12px; border: none; background: var(--teal);
+  color: #fff; font-weight: 600; cursor: pointer; font-size: 15px;
+}
+.chat-form button:disabled { opacity: .5; cursor: default; }
+
+/* Plan panel */
+.plan-panel {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 20px; box-shadow: var(--shadow); display: flex; flex-direction: column;
+  min-height: 0; overflow-y: auto;
+}
+.plan-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.plan-head h3 { margin: 0; font-size: 16px; }
+.plan-goal {
+  background: #e6f2f0; color: var(--teal-deep); padding: 10px 13px; border-radius: 10px;
+  font-weight: 500; font-size: 14px; margin: 10px 0;
+}
+.focus-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.focus-tags span {
+  background: #f0f8f6; border: 1px solid var(--line); color: var(--teal-deep);
+  padding: 4px 10px; border-radius: 999px; font-size: 12px;
+}
+.plan-body { font-size: 14px; flex: 1; }
+.plan-body h1, .plan-body h2, .plan-body h3 { font-size: 14px; margin: 12px 0 5px; }
+.plan-body ul, .plan-body ol { padding-left: 18px; margin: 6px 0; }
+.plan-body li { margin: 3px 0; }
+.plan-body strong { color: var(--teal-deep); }
+.plan-meta { font-size: 12px; color: var(--muted); margin-top: 12px; }
+
+@media (max-width: 860px) {
+  .coach { grid-template-columns: 1fr; }
+  .plan-panel { order: -1; max-height: 240px; }
+}
