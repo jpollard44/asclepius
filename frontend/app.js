@@ -38,6 +38,8 @@ async function init() {
 function showUpload() {
   $("#uploadView").classList.remove("hidden");
   $("#appView").classList.add("hidden");
+  $("#rangeBadge").classList.add("hidden");
+  $("#uploadStatus").textContent = "";
 }
 
 async function enterApp(status) {
