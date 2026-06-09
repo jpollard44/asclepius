@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Asclepius — Personal Health Advisor</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark">⚕</span>
+      <div>
+        <h1>Asclepius</h1>
+        <p class="tagline">Your private Apple Health advisor</p>
+      </div>
+    </div>
+    <div id="rangeBadge" class="range-badge hidden"></div>
+  </header>
+
+  <!-- Upload / onboarding -->
+  <section id="uploadView" class="upload-view">
+    <div class="upload-card">
+      <h2>Load your Apple Health data</h2>
+      <ol class="steps">
+        <li>On your iPhone, open <strong>Health</strong> → tap your profile photo → <strong>Export All Health Data</strong>.</li>
+        <li>Transfer the resulting <code>export.zip</code> to this computer (AirDrop, email, etc.).</li>
+        <li>Drop the <code>.zip</code> (or the <code>export.xml</code> inside it) below.</li>
+      </ol>
+      <label id="dropzone" class="dropzone">
+        <input type="file" id="fileInput" accept=".zip,.xml" hidden />
+        <span class="dz-icon">⬆</span>
+        <span class="dz-text">Drag &amp; drop your export here, or click to choose</span>
+        <span class="dz-hint">Everything is processed locally on this machine.</span>
+      </label>
+      <div id="uploadStatus" class="upload-status"></div>
+    </div>
+  </section>
+
+  <!-- Main app -->
+  <main id="appView" class="app-view hidden">
+    <nav class="tabs">
+      <button class="tab active" data-tab="dashboard">Dashboard</button>
+      <button class="tab" data-tab="explore">Explore metrics</button>
+      <button class="tab" data-tab="advisor">Advisor</button>
+      <button class="tab ghost" id="reloadBtn">Load new export</button>
+    </nav>
+
+    <!-- Dashboard -->
+    <section id="tab-dashboard" class="tab-panel active">
+      <h2>Overview <span class="muted" id="overviewWindow">· last 30 days</span></h2>
+      <div id="cards" class="cards"></div>
+
+      <div class="panel-grid">
+        <div class="panel">
+          <h3>Sleep</h3>
+          <div id="sleepStats" class="mini-stats"></div>
+          <canvas id="sleepChart" height="160"></canvas>
+        </div>
+        <div class="panel">
+          <h3>Workouts <span class="muted">· last 30 days</span></h3>
+          <div id="workoutList" class="workout-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Explore -->
+    <section id="tab-explore" class="tab-panel">
+      <div class="explore-head">
+        <h2>Explore metrics</h2>
+        <div class="controls">
+          <select id="metricSelect"></select>
+          <select id="rangeSelect">
+            <option value="30">30 days</option>
+            <option value="90" selected>90 days</option>
+            <option value="365">1 year</option>
+            <option value="3650">All time</option>
+          </select>
+        </div>
+      </div>
+      <div id="metricSummary" class="mini-stats"></div>
+      <div class="panel"><canvas id="metricChart" height="120"></canvas></div>
+    </section>
+
+    <!-- Advisor -->
+    <section id="tab-advisor" class="tab-panel">
+      <h2>Ask your advisor</h2>
+      <p class="muted advisor-note">Asclepius reads your real data to answer. It is not a doctor — consult a professional for medical concerns.</p>
+      <div id="chatLog" class="chat-log"></div>
+      <div class="suggestions" id="suggestions">
+        <button class="chip">How has my sleep been lately?</button>
+        <button class="chip">Is my resting heart rate trending well?</button>
+        <button class="chip">What should I focus on this month?</button>
+        <button class="chip">How does my activity compare to last month?</button>
+      </div>
+      <form id="chatForm" class="chat-form">
+        <input id="chatInput" type="text" placeholder="Ask about your sleep, heart, activity, or body…" autocomplete="off" />
+        <button type="submit" id="sendBtn">Send</button>
+      </form>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

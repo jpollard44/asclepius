@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Your personal health data — NEVER commit this
+data/
+*.xml
+*.zip
+export*.xml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
