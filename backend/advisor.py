@@ -122,6 +122,43 @@ TOOLS = [
         },
     },
     {
+        "name": "get_dashboard",
+        "description": "Get today's snapshot across every area: nutrition totals "
+                       "and goals, water, steps, last night's sleep, workouts this "
+                       "week, current streaks, and goal progress.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_nutrition_summary",
+        "description": "Get logged food statistics over a recent window: daily "
+                       "calories and macros (protein/carbs/fat), averages, and trend.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"days": {"type": "integer", "description": "Default 7."}},
+        },
+    },
+    {
+        "name": "get_goals",
+        "description": "List the user's active goals with their target, current "
+                       "value read from the data, and progress percent.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_workout_volume",
+        "description": "Get strength-training volume (sets×reps×weight) over a "
+                       "window, broken down by exercise, plus session count.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"days": {"type": "integer", "description": "Default 30."}},
+        },
+    },
+    {
+        "name": "get_personal_records",
+        "description": "Get the user's heaviest lift and estimated 1RM per "
+                       "strength exercise, all-time.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "get_plan",
         "description": "Retrieve the user's current saved health plan, if any.",
         "input_schema": {"type": "object", "properties": {}},
@@ -175,6 +212,16 @@ def _run_tool(name: str, args: dict) -> dict:
         return analytics.sleep_summary(int(args.get("days", 30)))
     if name == "get_workouts_summary":
         return analytics.workouts_summary(int(args.get("days", 30)))
+    if name == "get_dashboard":
+        return analytics.dashboard()
+    if name == "get_nutrition_summary":
+        return analytics.nutrition_summary(int(args.get("days", 7)))
+    if name == "get_goals":
+        return {"goals": analytics.goals_progress()}
+    if name == "get_workout_volume":
+        return analytics.workout_volume(int(args.get("days", 30)))
+    if name == "get_personal_records":
+        return {"records": analytics.personal_records()}
     if name == "get_plan":
         return get_plan() or {"plan": None, "note": "No plan saved yet."}
     if name == "save_plan":
@@ -246,3 +293,35 @@ def chat(messages: list[dict], max_tool_turns: int = 10) -> dict:
 def briefing() -> dict:
     """Generate the proactive opening briefing (and initial plan)."""
     return chat([{"role": "user", "content": BRIEFING_INSTRUCTION}])
+
+
+RECOMMENDATION_PROMPTS = {
+    "meals": (
+        "Based on what I've eaten recently and my nutrition goals, recommend "
+        "specific meals or food swaps for the rest of today. Look at my logged "
+        "food and remaining calories/protein. Give 2-3 concrete options with "
+        "rough macros. Be practical."
+    ),
+    "workout": (
+        "Recommend my next workout. Look at my recent training volume, what I've "
+        "trained lately, and my goals. Give a specific session (exercises, sets, "
+        "reps, target weights where you can) and say why."
+    ),
+    "recovery": (
+        "Assess my recovery right now from sleep, resting heart rate, HRV, and "
+        "recent training load. Tell me whether to push or pull back today, and "
+        "what to do about it."
+    ),
+    "focus": (
+        "Look across all my data and tell me the single most important thing to "
+        "focus on this week to move toward my goals, with a concrete action."
+    ),
+}
+
+
+def recommend(topic: str) -> dict:
+    """Produce a focused, data-grounded recommendation on one topic."""
+    instruction = RECOMMENDATION_PROMPTS.get(
+        topic,
+        f"Give me a specific, data-grounded recommendation about: {topic}.")
+    return chat([{"role": "user", "content": instruction}])

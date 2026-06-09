@@ -2,73 +2,86 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0b1413" />
   <title>Asclepius — Your Health Coach</title>
   <link rel="stylesheet" href="/styles.css" />
+  <script src="/vendor/chart.umd.min.js"></script>
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="mark">⚕</span>
-      <div>
-        <h1>Asclepius</h1>
-        <p class="tagline">Your personal health coach</p>
-      </div>
-    </div>
-    <button id="reloadBtn" class="ghost-btn hidden">Load new export</button>
-  </header>
-
-  <!-- Onboarding -->
+  <!-- ===================== Onboarding / upload ===================== -->
   <section id="uploadView" class="upload-view">
     <div class="upload-card">
-      <h2>Meet your coach</h2>
-      <p class="lead">Asclepius reads your own Apple Health data and becomes your
-        proactive advisor — telling you what matters, building a plan, and
-        coaching you toward the optimal version of yourself.</p>
-      <ol class="steps">
-        <li>On your iPhone: <strong>Health</strong> → profile photo → <strong>Export All Health Data</strong>.</li>
-        <li>Send the <code>export.zip</code> to this computer.</li>
-        <li>Drop it below — everything is processed locally.</li>
-      </ol>
+      <div class="brand center">
+        <span class="mark">⚕</span>
+        <h1>Asclepius</h1>
+      </div>
+      <p class="lead">Your proactive health coach. Import your Apple Health data,
+        log food, water, workouts and more — and let your coach guide you toward
+        the optimal version of yourself.</p>
+
       <label id="dropzone" class="dropzone">
         <input type="file" id="fileInput" accept=".zip,.xml" hidden />
         <span class="dz-icon">⬆</span>
-        <span class="dz-text">Drop your export here, or click to choose</span>
-        <span class="dz-hint">Your data stays on this machine.</span>
+        <span class="dz-text">Import Apple Health export</span>
+        <span class="dz-hint">Drop your <code>export.zip</code> here, or tap to choose.
+          Everything stays on this machine.</span>
       </label>
       <div id="uploadStatus" class="upload-status"></div>
+
+      <button id="skipImportBtn" class="text-btn">Skip — I'll just log manually →</button>
+
+      <details class="how">
+        <summary>How do I export from Apple Health?</summary>
+        <ol class="steps">
+          <li>On iPhone: <strong>Health</strong> → profile photo → <strong>Export All Health Data</strong>.</li>
+          <li>Send the <code>export.zip</code> to this computer.</li>
+          <li>Drop it above.</li>
+        </ol>
+      </details>
     </div>
   </section>
 
-  <!-- Coach -->
-  <main id="appView" class="coach hidden">
-    <section class="conversation">
-      <div id="chatLog" class="chat-log"></div>
-      <div class="suggestions" id="suggestions">
-        <button class="chip">How am I doing overall?</button>
-        <button class="chip">What should I focus on this week?</button>
-        <button class="chip">Refresh my plan</button>
-        <button class="chip">How's my sleep affecting my recovery?</button>
+  <!-- ===================== Main app ===================== -->
+  <div id="appView" class="app hidden">
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark">⚕</span>
+        <div>
+          <h1>Asclepius</h1>
+          <p class="tagline" id="topbarSub">Your health coach</p>
+        </div>
       </div>
-      <form id="chatForm" class="chat-form">
-        <input id="chatInput" type="text" autocomplete="off"
-               placeholder="Ask your coach anything, or tell it how you're feeling…" />
-        <button type="submit" id="sendBtn">Send</button>
-      </form>
-    </section>
+      <button id="reloadBtn" class="ghost-btn" title="Import a new export">Import</button>
+    </header>
 
-    <aside class="plan-panel">
-      <div class="plan-head">
-        <h3>Your plan</h3>
-        <button id="refreshPlanBtn" class="ghost-btn small" title="Have the coach revise your plan">Revise</button>
+    <main id="screen" class="screen"><!-- active tab renders here --></main>
+
+    <!-- Bottom tab navigation -->
+    <nav class="tabbar" id="tabbar">
+      <button class="tab" data-tab="dashboard"><span class="ti">◎</span><span>Home</span></button>
+      <button class="tab" data-tab="food"><span class="ti">🍎</span><span>Food</span></button>
+      <button class="tab" data-tab="workouts"><span class="ti">🏋</span><span>Train</span></button>
+      <button class="tab" data-tab="body"><span class="ti">📏</span><span>Body</span></button>
+      <button class="tab" data-tab="sleep"><span class="ti">🌙</span><span>Sleep</span></button>
+      <button class="tab" data-tab="goals"><span class="ti">🎯</span><span>Goals</span></button>
+      <button class="tab" data-tab="coach"><span class="ti">💬</span><span>Coach</span></button>
+    </nav>
+  </div>
+
+  <!-- ===================== Modal / bottom sheet ===================== -->
+  <div id="sheet" class="sheet-backdrop hidden">
+    <div class="sheet" role="dialog" aria-modal="true">
+      <div class="sheet-head">
+        <h3 id="sheetTitle">—</h3>
+        <button id="sheetClose" class="icon-btn" aria-label="Close">✕</button>
       </div>
-      <div id="planBody" class="plan-body">
-        <p class="muted">Your coach will build your plan from your first briefing.</p>
-      </div>
-      <div id="planMeta" class="plan-meta"></div>
-    </aside>
-  </main>
+      <div id="sheetBody" class="sheet-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
 
   <script src="/app.js"></script>
 </body>
