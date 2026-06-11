@@ -135,6 +135,27 @@ def recent_food(days: int = 7, limit: int = 50,
     return [dict(r) for r in rows]
 
 
+def update_food_meal(entry_id: int, meal: str,
+                     db_path: Path | None = None) -> dict | None:
+    """Move a food-log entry to a different meal slot.
+
+    ``meal`` must be one of the configured meals (breakfast/lunch/dinner/snack);
+    an invalid value raises ValueError. Returns the updated row, or None if no
+    entry has that id.
+    """
+    if meal not in MEALS:
+        raise ValueError(f"Unknown meal {meal!r}; expected one of {MEALS}.")
+    init_db(db_path)
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE food_log SET meal = ? WHERE id = ?", (meal, entry_id))
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT * FROM food_log WHERE id = ?", (entry_id,)).fetchone()
+    return dict(row)
+
+
 def delete_food(entry_id: int, db_path: Path | None = None) -> bool:
     init_db(db_path)
     with connect(db_path) as conn:

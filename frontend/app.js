@@ -833,7 +833,38 @@ function foodEntryRow(e) {
       el("div", { class: "l-title" }, e.name + (e.qty !== 1 ? ` ×${round(e.qty, 2)}` : "")),
       el("div", { class: "l-sub" }, `${fmt(e.protein)}P · ${fmt(e.carbs)}C · ${fmt(e.fat)}F`)),
     el("div", { class: "l-val" }, fmt(e.kcal), el("small", {}, " kcal")),
+    el("button", { class: "move", title: "Move to another meal",
+      onclick: (ev) => { ev.stopPropagation(); openMoveFood(e); } }, "⇄"),
     el("button", { class: "del", onclick: async (ev) => { ev.stopPropagation(); await jdel("/api/food/" + e.id); switchTab("food"); } }, "✕"));
+}
+
+// Reassign a food entry to a different meal. `after` runs once the move lands
+// (e.g. to refresh an open detail overlay); the Food tab is always re-rendered.
+async function moveFood(e, meal, after) {
+  if (meal === e.meal) return;
+  try {
+    await jput("/api/food/" + e.id + "/meal", { meal });
+    e.meal = meal;
+    toast(`Moved ${e.name} to ${meal}`);
+    if (after) after();
+    if (State.tab === "food") switchTab("food");
+  } catch (err) {
+    toast(err.message || "Couldn't move that entry");
+  }
+}
+
+// Sheet of the four meals; tapping one moves the entry and closes the sheet.
+function openMoveFood(e, after) {
+  const body = el("div", {});
+  State.config.meals.forEach((meal) => {
+    body.append(el("button", {
+      class: "btn full" + (meal === e.meal ? " secondary" : ""),
+      style: "margin-top:10px",
+      disabled: meal === e.meal || null,
+      onclick: async () => { closeSheet(); await moveFood(e, meal, after); },
+    }, `${MEAL_ICONS[meal] || ""} ${meal}` + (meal === e.meal ? " (current)" : "")));
+  });
+  openSheet(`Move ${e.name}`, body);
 }
 function dateLabel(iso) {
   if (iso === todayISO()) return "Today";
@@ -2372,6 +2403,19 @@ function openFoodEntryDetail(e) {
     kv.append(kvRow("Serving", servingUS(e.serving) || "1 serving"));
     kv.append(kvRow("Quantity", round(e.qty, 2) + "×"));
     body.append(dCard("Nutrition", kv));
+
+    // Meal selector — tap a chip to reassign this entry, re-rendering in place.
+    const mealCard = dCard("Meal");
+    const chips = el("div", { class: "meal-chips" });
+    State.config.meals.forEach((meal) => {
+      chips.append(el("button", {
+        class: "meal-chip" + (meal === e.meal ? " active" : ""),
+        onclick: () => moveFood(e, meal, () => openFoodEntryDetail(e)),
+      }, `${MEAL_ICONS[meal] || ""} ${meal}`));
+    });
+    mealCard.append(chips);
+    body.append(mealCard);
+
     body.append(el("button", { class: "btn danger full", style: "margin-top:6px", onclick: async () => {
       await jdel("/api/food/" + e.id); closeDetail(); switchTab("food"); toast("Deleted " + e.name);
     } }, "Delete entry"));

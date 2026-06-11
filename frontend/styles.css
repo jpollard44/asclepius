@@ -299,6 +299,43 @@ a { color: var(--teal); }
   display: inline-flex; align-items: center; justify-content: center;
 }
 .del:hover { color: var(--coral); }
+.move {
+  color: var(--faint); cursor: pointer; font-size: 16px; border: none; background: none;
+  min-width: 40px; min-height: 40px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.move:hover { color: var(--teal); }
+
+/* meal selector chips (food-entry detail overlay) */
+.meal-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.meal-chip {
+  border: 1px solid var(--line); background: var(--surface); color: var(--muted);
+  padding: 9px 14px; min-height: 38px; border-radius: 999px; cursor: pointer;
+  font-size: 13px; font-weight: 550; white-space: nowrap; text-transform: capitalize;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.meal-chip:hover { border-color: var(--teal); color: var(--teal); }
+.meal-chip.active {
+  border-color: var(--teal); color: var(--teal); background: rgba(45,212,191,.08);
+}
+.move {
+  color: var(--faint); cursor: pointer; font-size: 16px; border: none; background: none;
+  min-width: 40px; min-height: 40px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.move:hover { color: var(--teal); }
+
+/* Meal selector chips in the food-entry detail overlay */
+.meal-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.meal-chip {
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--muted);
+  border-radius: 999px; padding: 8px 14px; font-size: 13px; font-weight: 600;
+  text-transform: capitalize; cursor: pointer; min-height: 40px;
+}
+.meal-chip:hover { border-color: var(--teal); color: var(--teal); }
+.meal-chip.active {
+  border-color: var(--teal); color: var(--teal); background: rgba(45,212,191,.08);
+}
 
 .meal-block { margin-bottom: 6px; }
 .meal-head { display: flex; align-items: center; justify-content: space-between; margin: 14px 2px 2px; }

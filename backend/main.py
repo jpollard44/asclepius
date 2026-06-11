@@ -380,6 +380,22 @@ def delete_food(entry_id: int) -> dict:
     return {"status": "ok"}
 
 
+class FoodMealUpdate(BaseModel):
+    meal: str
+
+
+@app.put("/api/food/{entry_id}/meal")
+def move_food(entry_id: int, update: FoodMealUpdate) -> dict:
+    """Reassign a food entry to a different meal (breakfast/lunch/dinner/snack)."""
+    try:
+        entry = tracking.update_food_meal(entry_id, update.meal)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Entry not found.")
+    return entry
+
+
 @app.get("/api/nutrition")
 def nutrition(days: int = 30) -> dict:
     return analytics.nutrition_summary(days)
