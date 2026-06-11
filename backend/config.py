@@ -14,6 +14,10 @@ DB_PATH = Path(os.environ.get("ASCLEPIUS_DB", DATA_DIR / "health.db"))
 # The advisor model. Opus 4.8 is the most capable model for grounded reasoning.
 MODEL = os.environ.get("ASCLEPIUS_MODEL", "claude-opus-4-8")
 
+# Model used for food-photo analysis. Sonnet 4.6 has vision and is fast and
+# cheap — a good fit for estimating macros from a single snapshot.
+VISION_MODEL = os.environ.get("ASCLEPIUS_VISION_MODEL", "claude-sonnet-4-6")
+
 # Apple Health quantity record types we ingest, mapped to a friendly key, the
 # aggregation to apply per day ("sum" or "avg"), a display label, a unit, and
 # the focus area it belongs to.
@@ -86,8 +90,24 @@ PERCENT_KEYS = {"blood_oxygen", "body_fat"}
 # survive a re-import and show up on the same charts.
 MANUAL_METRICS = {
     "body_mass": {"label": "Weight", "unit": "kg", "area": "body", "agg": "avg"},
+    "bmi": {"label": "BMI", "unit": "", "area": "body", "agg": "avg"},
     "body_fat": {"label": "Body Fat", "unit": "%", "area": "body", "agg": "avg"},
     "lean_body_mass": {"label": "Lean Body Mass", "unit": "kg", "area": "body", "agg": "avg"},
+    # --- Smart-scale body composition (Renpho/Withings-style) ---
+    # Imported with source='scale' and shown on the Body tab next to manual
+    # measurements. kg fields auto-convert to lb for display; % and ratings
+    # pass through unchanged.
+    "muscle_mass": {"label": "Muscle Mass", "unit": "kg", "area": "body", "agg": "avg"},
+    "muscle_mass_pct": {"label": "Muscle Mass %", "unit": "%", "area": "body", "agg": "avg"},
+    "body_water": {"label": "Body Water", "unit": "%", "area": "body", "agg": "avg"},
+    "bone_mass": {"label": "Bone Mass", "unit": "kg", "area": "body", "agg": "avg"},
+    "protein_pct": {"label": "Protein", "unit": "%", "area": "body", "agg": "avg"},
+    "visceral_fat": {"label": "Visceral Fat", "unit": "", "area": "body", "agg": "avg"},
+    "bmr": {"label": "BMR", "unit": "kcal", "area": "body", "agg": "avg"},
+    "metabolic_age": {"label": "Metabolic Age", "unit": "yr", "area": "body", "agg": "avg"},
+    "skeletal_muscle": {"label": "Skeletal Muscle", "unit": "%", "area": "body", "agg": "avg"},
+    "fat_content": {"label": "Fat Content", "unit": "kg", "area": "body", "agg": "avg"},
+    "subcutaneous_fat": {"label": "Subcutaneous Fat", "unit": "%", "area": "body", "agg": "avg"},
     "waist": {"label": "Waist", "unit": "cm", "area": "body", "agg": "avg"},
     "chest": {"label": "Chest", "unit": "cm", "area": "body", "agg": "avg"},
     "hips": {"label": "Hips", "unit": "cm", "area": "body", "agg": "avg"},
@@ -119,27 +139,85 @@ GOAL_CATEGORIES = {
     "custom": {"label": "Custom", "metric": None, "unit": ""},
 }
 
-# Default daily water goal (ml) when the user hasn't set one.
-DEFAULT_WATER_GOAL_ML = 2500
+# Default daily water goal. Water is stored in ml internally, but the UI works
+# in fluid ounces; 2957 ml is a round 100 fl oz so it reads cleanly.
+DEFAULT_WATER_GOAL_ML = 2957
+
+# ---------------------------------------------------------------------------
+# Web push notifications
+# ---------------------------------------------------------------------------
+# VAPID keypair (generate with scripts/gen_vapid.py, stored in .env). Without a
+# private key the app still runs — push is simply disabled and the scheduler
+# never starts.
+VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
+VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:asclepius@localhost")
+
+# Quiet hours — no notification fires inside this window, whatever the schedule
+# says (overnight, so start > end). Format "HH:MM", 24-hour, local time.
+DEFAULT_DND_START = "23:00"
+DEFAULT_DND_END = "07:00"
+
+# If the app pinged the API within this many seconds we assume it's open in the
+# foreground and skip the reminder (no point nudging someone already looking).
+APP_OPEN_WINDOW_SEC = 5 * 60
+
+# Water reminders run on the even hours of this inclusive window. The pace check
+# (have you drunk your share for the time of day?) suppresses the rest.
+WATER_REMINDER_START_HOUR = 8
+WATER_REMINDER_END_HOUR = 22
+
+# The notification catalogue. Each entry defines a reminder type the scheduler
+# can fire and the user can toggle. ``time`` is the daily fire time (24h HH:MM);
+# water has no single time (it runs on an interval) and workout splits weekday vs
+# weekend. ``editable_time`` marks the ones whose time the settings UI exposes.
+# These are *defaults* — the live values live in the push_prefs table so the user
+# can change them, and survive a re-import.
+NOTIFICATION_TYPES = {
+    "breakfast": {"label": "Breakfast reminder", "time": "08:00",
+                  "editable_time": True,
+                  "desc": "Nudge to log breakfast if you haven't."},
+    "lunch": {"label": "Lunch reminder", "time": "12:30",
+              "editable_time": True,
+              "desc": "Nudge to log lunch if you haven't."},
+    "dinner": {"label": "Dinner reminder", "time": "18:30",
+               "editable_time": True,
+               "desc": "Nudge to log dinner if you haven't."},
+    "water": {"label": "Water reminders", "time": None,
+              "editable_time": False,
+              "desc": "Every 2 hours (8am–10pm) when you're behind pace."},
+    "workout": {"label": "Workout reminder", "time": "17:30",
+                "time_weekend": "09:00", "editable_time": True,
+                "desc": "Daily, unless you've already trained today."},
+    "sleep": {"label": "Sleep wind-down", "time": "22:00",
+              "editable_time": True,
+              "desc": "Evening reminder to wind down for 7+ hours."},
+    "coach": {"label": "Coach check-in", "time": "09:00",
+              "editable_time": True,
+              "desc": "Daily brief from your coach."},
+    "weekly": {"label": "Weekly recap", "time": "08:00",
+               "editable_time": True,
+               "desc": "Sunday morning summary of your week."},
+}
 
 # A small built-in food database so logging on a phone is a couple of taps.
 # Macros are per the listed serving. (name, category, serving, kcal, P, C, F)
 COMMON_FOODS = [
     # Protein
-    ("Chicken breast (cooked)", "protein", "100 g", 165, 31, 0, 3.6),
-    ("Salmon (cooked)", "protein", "100 g", 208, 20, 0, 13),
-    ("Lean beef (cooked)", "protein", "100 g", 217, 26, 0, 12),
+    ("Chicken breast (cooked)", "protein", "3.5 oz", 165, 31, 0, 3.6),
+    ("Salmon (cooked)", "protein", "3.5 oz", 208, 20, 0, 13),
+    ("Lean beef (cooked)", "protein", "3.5 oz", 217, 26, 0, 12),
     ("Eggs", "protein", "2 large", 156, 13, 1.1, 11),
-    ("Greek yogurt (plain)", "protein", "170 g", 100, 17, 6, 0.7),
-    ("Tofu (firm)", "protein", "100 g", 144, 17, 3, 9),
+    ("Greek yogurt (plain)", "protein", "6 oz", 100, 17, 6, 0.7),
+    ("Tofu (firm)", "protein", "3.5 oz", 144, 17, 3, 9),
     ("Whey protein", "protein", "1 scoop", 120, 24, 3, 1.5),
-    ("Canned tuna", "protein", "100 g", 116, 26, 0, 1),
-    ("Shrimp (cooked)", "protein", "100 g", 99, 24, 0.2, 0.3),
-    ("Cottage cheese", "protein", "100 g", 98, 11, 3.4, 4.3),
+    ("Canned tuna", "protein", "3.5 oz", 116, 26, 0, 1),
+    ("Shrimp (cooked)", "protein", "3.5 oz", 99, 24, 0.2, 0.3),
+    ("Cottage cheese", "protein", "3.5 oz", 98, 11, 3.4, 4.3),
     # Carbs
     ("White rice (cooked)", "carbs", "1 cup", 205, 4.3, 45, 0.4),
     ("Brown rice (cooked)", "carbs", "1 cup", 216, 5, 45, 1.8),
-    ("Oats (dry)", "carbs", "50 g", 190, 6.5, 33, 3.5),
+    ("Oats (dry)", "carbs", "1.8 oz", 190, 6.5, 33, 3.5),
     ("Sweet potato", "carbs", "1 medium", 112, 2, 26, 0.1),
     ("Banana", "carbs", "1 medium", 105, 1.3, 27, 0.4),
     ("Apple", "carbs", "1 medium", 95, 0.5, 25, 0.3),
@@ -148,16 +226,16 @@ COMMON_FOODS = [
     ("Bagel", "carbs", "1 medium", 250, 10, 48, 1.5),
     ("Potato", "carbs", "1 medium", 161, 4.3, 37, 0.2),
     # Fats / nuts
-    ("Almonds", "fats", "30 g", 173, 6, 6, 15),
+    ("Almonds", "fats", "1 oz", 173, 6, 6, 15),
     ("Peanut butter", "fats", "2 tbsp", 188, 8, 6, 16),
     ("Avocado", "fats", "1/2", 120, 1.5, 6, 11),
     ("Olive oil", "fats", "1 tbsp", 119, 0, 0, 14),
-    ("Cheddar cheese", "fats", "30 g", 120, 7, 0.4, 10),
+    ("Cheddar cheese", "fats", "1 oz", 120, 7, 0.4, 10),
     # Veg / fruit
-    ("Broccoli", "veg", "100 g", 34, 2.8, 7, 0.4),
-    ("Spinach", "veg", "100 g", 23, 2.9, 3.6, 0.4),
+    ("Broccoli", "veg", "3.5 oz", 34, 2.8, 7, 0.4),
+    ("Spinach", "veg", "3.5 oz", 23, 2.9, 3.6, 0.4),
     ("Mixed salad", "veg", "1 bowl", 40, 2, 7, 0.5),
-    ("Blueberries", "veg", "100 g", 57, 0.7, 14, 0.3),
+    ("Blueberries", "veg", "3.5 oz", 57, 0.7, 14, 0.3),
     # Meals / misc
     ("Protein bar", "snack", "1 bar", 220, 20, 22, 7),
     ("Coffee (black)", "drink", "1 cup", 2, 0.3, 0, 0),

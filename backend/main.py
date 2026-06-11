@@ -1,16 +1,33 @@
 """Asclepius web app: upload Apple Health data and chat with your advisor."""
 from __future__ import annotations
 
+import base64
 import os
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile
+# Load .env before anything reads ANTHROPIC_API_KEY, so the advisor works no
+# matter how the server is started (launchctl, bare uvicorn, etc.).
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import advisor, analytics, parser, store, tracking
+from . import (
+    advisor,
+    analytics,
+    body_import,
+    notifications,
+    parser,
+    push,
+    scheduler,
+    store,
+    tracking,
+)
 from .config import (
     DATA_DIR,
     FRONTEND_DIR,
@@ -21,6 +38,35 @@ from .config import (
 )
 
 app = FastAPI(title="Asclepius", description="Personal Apple Health advisor")
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle & activity tracking
+# ---------------------------------------------------------------------------
+@app.on_event("startup")
+def _startup() -> None:
+    """Boot the reminder scheduler once the server is up (no-op without VAPID)."""
+    scheduler.start()
+
+
+@app.on_event("shutdown")
+def _shutdown() -> None:
+    scheduler.shutdown()
+
+
+@app.middleware("http")
+async def _track_activity(request: Request, call_next):
+    """Stamp the last time the app talked to the API.
+
+    The notification scheduler reads this to suppress reminders while the app is
+    open in the foreground (no point nudging someone already using it).
+    """
+    if request.url.path.startswith("/api/"):
+        try:
+            store.touch_activity()
+        except Exception:  # noqa: BLE001 - never block a request on bookkeeping
+            pass
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +100,29 @@ async def upload(file: UploadFile) -> JSONResponse:
         "date_range": analytics.date_range(),
         "metrics_found": len(analytics.available_metrics()),
     })
+
+
+@app.post("/api/import/body")
+async def import_body(file: UploadFile, sheet_name: str | None = None) -> dict:
+    """Import a smart-scale body-composition .xlsx (Renpho/Withings-style).
+
+    Reads the given sheet (default: first), reshapes each weigh-in into the
+    body metrics Asclepius tracks, de-duplicates to one reading per day, and
+    stores them in daily_metrics with source='scale'. Returns a summary of what
+    was imported.
+    """
+    name = (file.filename or "").lower()
+    if not name.endswith((".xlsx", ".xlsm")):
+        raise HTTPException(status_code=400,
+                            detail="Please upload an .xlsx body-measurement file.")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="The file was empty.")
+    try:
+        summary = body_import.import_xlsx(raw, sheet_name=sheet_name)
+    except body_import.BodyImportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return summary
 
 
 @app.get("/api/status")
@@ -134,14 +203,34 @@ class ChatRequest(BaseModel):
 @app.post("/api/chat")
 def chat(req: ChatRequest) -> dict:
     _require_data()
-    history = [{"role": m.role, "content": m.content} for m in req.messages]
-    if not history or history[-1]["role"] != "user":
+    if not req.messages or req.messages[-1].role != "user":
         raise HTTPException(status_code=400, detail="Last message must be from the user.")
+    user_text = req.messages[-1].content
+    # Ground the turn in the persisted conversation so the coach remembers prior
+    # chats even across page reloads, then append the new user message.
+    convo = store.recent_chat_messages(limit=40)
+    convo.append({"role": "user", "content": user_text})
     try:
-        result = advisor.chat(history)
+        result = advisor.chat(convo)
     except advisor.AdvisorError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+    # Persist only after a successful reply, so a failed turn never leaves a
+    # dangling user message in the history.
+    store.add_chat_message("user", user_text)
+    store.add_chat_message("assistant", result["reply"])
     return {"reply": result["reply"], "plan": store.get_plan()}
+
+
+@app.get("/api/chat/history")
+def chat_history(limit: int = 50, before: int | None = None) -> dict:
+    """Recent coach messages, oldest-first, paginated with ?limit & ?before=<id>."""
+    return store.get_chat_history(limit=limit, before=before)
+
+
+@app.delete("/api/chat/history")
+def clear_chat_history() -> dict:
+    """Wipe the coach conversation — backs the 'New chat' button."""
+    return {"status": "ok", "cleared": store.clear_chat_history()}
 
 
 @app.post("/api/briefing")
@@ -152,6 +241,7 @@ def briefing() -> dict:
         result = advisor.briefing()
     except advisor.AdvisorError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+    store.add_chat_message("assistant", result["reply"])
     return {"reply": result["reply"], "plan": store.get_plan()}
 
 
@@ -162,6 +252,7 @@ def plan() -> dict:
 
 class Recommendation(BaseModel):
     topic: str
+    label: str | None = None
 
 
 @app.post("/api/recommend")
@@ -171,6 +262,9 @@ def recommend(req: Recommendation) -> dict:
         result = advisor.recommend(req.topic)
     except advisor.AdvisorError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+    # Record the recommendation in the conversation so it persists in history.
+    store.add_chat_message("user", req.label or req.topic)
+    store.add_chat_message("assistant", result["reply"])
     return {"reply": result["reply"], "topic": req.topic}
 
 
@@ -211,6 +305,9 @@ class FoodEntry(BaseModel):
     serving: str = ""
     date: str | None = None
     food_id: int | None = None
+    fiber: float | None = None
+    sugar: float | None = None
+    sodium: float | None = None
 
 
 class CustomFood(BaseModel):
@@ -244,7 +341,36 @@ def food_log(date: str | None = None) -> dict:
 def add_food(entry: FoodEntry) -> dict:
     return tracking.add_food(
         entry.name, entry.kcal, entry.protein, entry.carbs, entry.fat,
-        entry.meal, entry.qty, entry.serving, entry.date, entry.food_id)
+        entry.meal, entry.qty, entry.serving, entry.date, entry.food_id,
+        entry.fiber, entry.sugar, entry.sodium)
+
+
+@app.post("/api/food/analyze")
+async def analyze_food(file: UploadFile) -> dict:
+    """Estimate macros & micros from a food photo via Claude's vision model.
+
+    Returns the AI's best estimate so the UI can pre-fill the log form for the
+    user to review and adjust before saving. Nothing is stored here.
+    """
+    media_type = file.content_type or ""
+    if not media_type.startswith("image/"):
+        # Fall back to a sensible default for camera captures with no type.
+        media_type = "image/jpeg"
+    if media_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please use a JPEG, PNG, GIF or WebP photo.")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="The photo was empty.")
+    if len(raw) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="That photo is too large (max 15 MB).")
+    image_data = base64.standard_b64encode(raw).decode("utf-8")
+    try:
+        estimate = advisor.analyze_food_photo(image_data, media_type)
+    except advisor.AdvisorError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {"estimate": estimate}
 
 
 @app.delete("/api/food/{entry_id}")
@@ -438,6 +564,96 @@ def delete_goal(goal_id: int) -> dict:
     if not tracking.delete_goal(goal_id):
         raise HTTPException(status_code=404, detail="Goal not found.")
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Push notifications
+# ---------------------------------------------------------------------------
+class PushSubscription(BaseModel):
+    subscription: dict
+    user_agent: str = ""
+
+
+class PushUnsubscribe(BaseModel):
+    endpoint: str
+
+
+class PushPrefs(BaseModel):
+    enabled: bool | None = None
+    dnd_start: str | None = None
+    dnd_end: str | None = None
+    types: dict | None = None
+
+
+class PushTrigger(BaseModel):
+    type: str
+
+
+@app.get("/api/push/vapid")
+def push_vapid() -> dict:
+    """The VAPID public key the browser needs to create a subscription."""
+    return {"public_key": push.public_key(), "enabled": push.enabled()}
+
+
+@app.post("/api/push/subscribe")
+def push_subscribe(req: PushSubscription) -> dict:
+    if not push.enabled():
+        raise HTTPException(status_code=503,
+                            detail="Push is not configured on this server.")
+    if not req.subscription.get("endpoint"):
+        raise HTTPException(status_code=400, detail="Invalid subscription.")
+    store.save_push_subscription(req.subscription, req.user_agent)
+    return {"status": "ok", "subscriptions": store.count_push_subscriptions()}
+
+
+@app.post("/api/push/unsubscribe")
+def push_unsubscribe(req: PushUnsubscribe) -> dict:
+    removed = store.delete_push_subscription(req.endpoint)
+    return {"status": "ok", "removed": removed,
+            "subscriptions": store.count_push_subscriptions()}
+
+
+@app.get("/api/push/prefs")
+def push_prefs() -> dict:
+    """Notification preferences (annotated for the settings UI) + next-run times."""
+    return {**notifications.prefs_view(), "jobs": scheduler.jobs_summary()}
+
+
+@app.put("/api/push/prefs")
+def update_push_prefs(req: PushPrefs) -> dict:
+    """Update preferences and rebuild the schedule so time changes take effect."""
+    saved = notifications.save_prefs(req.model_dump(exclude_none=True))
+    scheduler.reschedule_all()
+    return {"status": "ok", **notifications.prefs_view(),
+            "jobs": scheduler.jobs_summary()}
+
+
+@app.post("/api/push/send")
+def push_send() -> dict:
+    """Send a one-off test notification to every subscribed device (internal)."""
+    if not push.enabled():
+        raise HTTPException(status_code=503,
+                            detail="Push is not configured on this server.")
+    result = push.send_test()
+    if not result.get("subscriptions"):
+        raise HTTPException(status_code=400,
+                            detail="No devices are subscribed yet.")
+    return {"status": "ok", **result}
+
+
+@app.post("/api/push/trigger")
+def push_trigger(req: PushTrigger) -> dict:
+    """Force-run a single reminder now, bypassing suppression (for debugging)."""
+    if req.type not in notifications.NOTIFICATION_TYPES:
+        raise HTTPException(status_code=400,
+                            detail=f"Unknown notification type '{req.type}'.")
+    return notifications.fire(req.type, force=True)
+
+
+@app.get("/api/push/log")
+def push_log() -> dict:
+    """Recently-sent notifications (settings 'recent activity' view)."""
+    return {"notifications": store.recent_notifications(limit=20)}
 
 
 # ---------------------------------------------------------------------------

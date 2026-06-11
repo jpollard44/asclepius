@@ -15,7 +15,7 @@ from .config import (
     GOAL_CATEGORIES,
     MANUAL_METRICS,
 )
-from .store import SOURCE_MANUAL, connect, init_db
+from .store import SOURCE_MANUAL, SOURCE_SCALE, connect, init_db
 
 
 def _now() -> str:
@@ -75,17 +75,26 @@ def upsert_food(name: str, kcal: float, protein: float, carbs: float, fat: float
 def add_food(name: str, kcal: float, protein: float = 0, carbs: float = 0,
              fat: float = 0, meal: str = "snack", qty: float = 1,
              serving: str = "", date: str | None = None,
-             food_id: int | None = None, db_path: Path | None = None) -> dict:
-    """Log a food entry. Macros are per single serving; qty scales them."""
+             food_id: int | None = None, fiber: float | None = None,
+             sugar: float | None = None, sodium: float | None = None,
+             db_path: Path | None = None) -> dict:
+    """Log a food entry. Macros are per single serving; qty scales them.
+
+    ``fiber``/``sugar`` are grams and ``sodium`` is milligrams (optional micros,
+    e.g. estimated from a food photo); they're scaled by ``qty`` like the macros.
+    """
     init_db(db_path)
     date = _norm_date(date)
+    scale = lambda v: v * qty if v is not None else None  # noqa: E731
     with connect(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO food_log "
-            "(date, meal, name, qty, serving, kcal, protein, carbs, fat, source, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(date, meal, name, qty, serving, kcal, protein, carbs, fat, "
+            " fiber, sugar, sodium, source, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (date, meal, name.strip(), qty, serving,
              kcal * qty, protein * qty, carbs * qty, fat * qty,
+             scale(fiber), scale(sugar), scale(sodium),
              SOURCE_MANUAL, _now()))
         eid = cur.lastrowid
         if food_id:
@@ -109,6 +118,20 @@ def list_food(date: str | None = None, db_path: Path | None = None) -> dict:
             totals[k] += r[k] or 0
     totals = {k: round(v, 1) for k, v in totals.items()}
     return {"date": date, "entries": rows, "by_meal": by_meal, "totals": totals}
+
+
+def recent_food(days: int = 7, limit: int = 50,
+                db_path: Path | None = None) -> list[dict]:
+    """Recent individual food-log entries (most recent first) over a window."""
+    init_db(db_path)
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, date, meal, name, qty, serving, kcal, protein, carbs, fat, "
+            "fiber, sugar, sodium FROM food_log WHERE date >= ? "
+            "ORDER BY date DESC, created_at DESC LIMIT ?",
+            (cutoff, limit)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def delete_food(entry_id: int, db_path: Path | None = None) -> bool:
@@ -250,6 +273,36 @@ def log_metric(metric: str, value: float, date: str | None = None,
             "source=excluded.source",
             (metric, date, value, value, value, unit, SOURCE_MANUAL))
     return {"metric": metric, "date": date, "value": value, "unit": unit}
+
+
+def log_body_metrics(date: str | None, values: dict[str, float | None],
+                     source: str = SOURCE_SCALE,
+                     db_path: Path | None = None) -> list[str]:
+    """Write several body-composition metrics for one date as daily_metrics rows.
+
+    ``values`` maps a metric key (e.g. ``"muscle_mass"``) to a value already in
+    that metric's canonical unit (kg, %, kcal, …); ``None`` values are skipped.
+    Each metric/day is upserted, so re-importing the same reading is idempotent.
+    Used by the smart-scale importer (source='scale').
+    """
+    init_db(db_path)
+    date = _norm_date(date)
+    written: list[str] = []
+    with connect(db_path) as conn:
+        for metric, value in values.items():
+            if value is None:
+                continue
+            unit = MANUAL_METRICS.get(metric, {}).get("unit", "")
+            conn.execute(
+                "INSERT INTO daily_metrics "
+                "(metric, date, value, min, max, count, unit, source) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?, ?) "
+                "ON CONFLICT(metric, date) DO UPDATE SET value=excluded.value, "
+                "min=excluded.value, max=excluded.value, unit=excluded.unit, "
+                "source=excluded.source",
+                (metric, date, value, value, value, unit, source))
+            written.append(metric)
+    return written
 
 
 def log_sleep(date: str | None, asleep_hours: float, in_bed_hours: float | None = None,

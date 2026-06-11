@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <!-- Monochrome badge (Android tints it). White staff + serpent on transparent. -->
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="48" y1="18" x2="48" y2="78" stroke-width="6"/>
+    <circle cx="48" cy="18" r="5" fill="#ffffff" stroke="none"/>
+    <path d="M48 30 C 62 34, 62 43, 48 47 C 34 51, 34 60, 48 64 C 62 68, 62 77, 48 81"
+          stroke-width="5.5"/>
+  </g>
+</svg>

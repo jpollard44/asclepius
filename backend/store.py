@@ -18,6 +18,10 @@ from .config import COMMON_FOODS, DB_PATH
 # in by hand is stored as 'manual'. On re-import we only clear IMPORT rows.
 SOURCE_IMPORT = "apple"
 SOURCE_MANUAL = "manual"
+# Smart-scale body-composition imports. Kept distinct from 'apple' so a
+# re-import of an Apple Health export (which clears SOURCE_IMPORT rows) never
+# wipes scale data, and distinct from 'manual' so the two are reportable apart.
+SOURCE_SCALE = "scale"
 
 
 SCHEMA = """
@@ -71,6 +75,9 @@ CREATE TABLE IF NOT EXISTS food_log (
     protein    REAL NOT NULL DEFAULT 0,
     carbs      REAL NOT NULL DEFAULT 0,
     fat        REAL NOT NULL DEFAULT 0,
+    fiber      REAL,
+    sugar      REAL,
+    sodium     REAL,   -- mg
     source     TEXT NOT NULL DEFAULT 'manual',
     created_at TEXT
 );
@@ -142,6 +149,49 @@ CREATE TABLE IF NOT EXISTS plan_history (
     content    TEXT,
     saved_at   TEXT
 );
+
+-- Persistent coach chat history, so conversations survive page reloads and the
+-- advisor can load prior turns back into its context. tool_calls/tool_results
+-- hold the JSON the coach used on a turn (nullable; kept for the record).
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp    TEXT NOT NULL,
+    role         TEXT NOT NULL,              -- 'user' | 'assistant'
+    content      TEXT NOT NULL DEFAULT '',
+    tool_calls   TEXT,                       -- JSON, nullable
+    tool_results TEXT                        -- JSON, nullable
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_id ON chat_messages(id);
+
+-- Web push subscriptions, one row per browser/device the user enabled. The
+-- whole PushSubscription JSON is kept verbatim so pywebpush can send to it.
+-- NOT cleared on re-import — push survives uploading a new Apple Health export.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint     TEXT PRIMARY KEY,
+    subscription TEXT NOT NULL,   -- full PushSubscription JSON
+    user_agent   TEXT,
+    created_at   TEXT
+);
+
+-- Small key/value store for app settings that must outlive a re-import
+-- (notification preferences, last-activity timestamp). Deliberately separate
+-- from `meta`, which replace_data() wipes on every import.
+CREATE TABLE IF NOT EXISTS app_kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- One row per notification actually sent, so a restart or overlapping job never
+-- double-fires the same reminder. dedup_key is e.g. "breakfast:2026-06-10" or
+-- "water:2026-06-10:14".
+CREATE TABLE IF NOT EXISTS notification_log (
+    dedup_key TEXT PRIMARY KEY,
+    ntype     TEXT NOT NULL,
+    title     TEXT,
+    body      TEXT,
+    sent_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notif_sent ON notification_log(sent_at);
 """
 
 
@@ -170,6 +220,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 f"ALTER TABLE {table} ADD COLUMN source TEXT NOT NULL "
                 f"DEFAULT '{SOURCE_IMPORT}'")
 
+    # food_log gained micronutrient columns for photo-based logging.
+    food_cols = _table_columns(conn, "food_log")
+    if food_cols:
+        for col in ("fiber", "sugar", "sodium"):
+            if col not in food_cols:
+                conn.execute(f"ALTER TABLE food_log ADD COLUMN {col} REAL")
+
     # workouts gained several columns (and an id) over time. The very first
     # build had no `id` primary key — SQLite can't ALTER one in — so when it's
     # missing we rebuild the table and copy the old rows across.
@@ -194,6 +251,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ):
             if col not in wcols:
                 conn.execute(f"ALTER TABLE workouts ADD COLUMN {col} {ddl}")
+
+    # Persistent coach chat history is newer than the first builds. init_db runs
+    # SCHEMA (CREATE IF NOT EXISTS) before this, so the table normally already
+    # exists — but create it idempotently here too so an older DB picked up
+    # outside init_db is brought current.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS chat_messages ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " timestamp TEXT NOT NULL,"
+        " role TEXT NOT NULL,"
+        " content TEXT NOT NULL DEFAULT '',"
+        " tool_calls TEXT,"
+        " tool_results TEXT)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_id ON chat_messages(id)")
 
 
 def init_db(db_path: Path | None = None) -> None:
@@ -358,6 +430,216 @@ def plan_history(limit: int = 20, db_path: Path | None = None) -> list[dict]:
             focus = []
         out.append({"goal": r["goal"], "focus": focus, "saved_at": r["saved_at"]})
     return out
+
+
+# ---------------------------------------------------------------------------
+# Coach chat history
+# ---------------------------------------------------------------------------
+def _loads(value):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return value
+
+
+def _chat_row(r: sqlite3.Row) -> dict:
+    return {
+        "id": r["id"],
+        "timestamp": r["timestamp"],
+        "role": r["role"],
+        "content": r["content"] or "",
+        "tool_calls": _loads(r["tool_calls"]),
+        "tool_results": _loads(r["tool_results"]),
+    }
+
+
+def add_chat_message(role: str, content: str, tool_calls=None,
+                     tool_results=None, db_path: Path | None = None) -> dict:
+    """Append one message to the persistent coach conversation."""
+    init_db(db_path)
+    ts = _now()
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO chat_messages "
+            "(timestamp, role, content, tool_calls, tool_results) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (ts, role, content or "",
+             json.dumps(tool_calls) if tool_calls is not None else None,
+             json.dumps(tool_results) if tool_results is not None else None),
+        )
+        msg_id = cur.lastrowid
+    return {"id": msg_id, "timestamp": ts, "role": role, "content": content or "",
+            "tool_calls": tool_calls, "tool_results": tool_results}
+
+
+def get_chat_history(limit: int = 50, before: int | None = None,
+                     db_path: Path | None = None) -> dict:
+    """Return a page of chat messages in chronological (oldest-first) order.
+
+    Without ``before`` this is the most recent ``limit`` messages. With
+    ``before`` (a message id) it's the ``limit`` messages immediately older than
+    that id — the building block for scrolling back through history. ``has_more``
+    is True when still-older messages exist beyond the page returned.
+    """
+    init_db(db_path)
+    limit = max(1, min(int(limit or 50), 200))
+    with connect(db_path) as conn:
+        if before:
+            rows = conn.execute(
+                "SELECT * FROM chat_messages WHERE id < ? ORDER BY id DESC LIMIT ?",
+                (int(before), limit)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM chat_messages ORDER BY id DESC LIMIT ?",
+                (limit,)).fetchall()
+        messages = [_chat_row(r) for r in reversed(rows)]
+        has_more = False
+        if messages:
+            has_more = conn.execute(
+                "SELECT 1 FROM chat_messages WHERE id < ? LIMIT 1",
+                (messages[0]["id"],)).fetchone() is not None
+    return {"messages": messages, "has_more": has_more}
+
+
+def recent_chat_messages(limit: int = 40,
+                         db_path: Path | None = None) -> list[dict]:
+    """Recent turns as plain {role, content} pairs for the advisor's context.
+
+    Trimmed to start on a user turn so it can be handed straight to the model.
+    """
+    history = get_chat_history(limit=limit, db_path=db_path)["messages"]
+    msgs = [{"role": m["role"], "content": m["content"]}
+            for m in history if m["content"]]
+    while msgs and msgs[0]["role"] != "user":
+        msgs.pop(0)
+    return msgs
+
+
+def clear_chat_history(db_path: Path | None = None) -> int:
+    """Delete the entire coach conversation. Returns rows removed."""
+    init_db(db_path)
+    with connect(db_path) as conn:
+        return conn.execute("DELETE FROM chat_messages").rowcount
+
+
+# ---------------------------------------------------------------------------
+# Web push subscriptions
+# ---------------------------------------------------------------------------
+def save_push_subscription(subscription: dict, user_agent: str = "",
+                           db_path: Path | None = None) -> None:
+    """Store (or refresh) a browser push subscription, keyed by its endpoint."""
+    init_db(db_path)
+    endpoint = subscription.get("endpoint")
+    if not endpoint:
+        raise ValueError("subscription is missing an endpoint")
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO push_subscriptions (endpoint, subscription, user_agent, created_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(endpoint) DO UPDATE SET subscription=excluded.subscription, "
+            "user_agent=excluded.user_agent",
+            (endpoint, json.dumps(subscription), user_agent, _now()))
+
+
+def list_push_subscriptions(db_path: Path | None = None) -> list[dict]:
+    """Every stored subscription as a parsed PushSubscription dict."""
+    init_db(db_path)
+    with connect(db_path) as conn:
+        rows = conn.execute("SELECT subscription FROM push_subscriptions").fetchall()
+    out = []
+    for r in rows:
+        try:
+            out.append(json.loads(r["subscription"]))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return out
+
+
+def delete_push_subscription(endpoint: str, db_path: Path | None = None) -> bool:
+    """Remove a subscription (on unsubscribe, or when the push service 410s it)."""
+    init_db(db_path)
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+    return cur.rowcount > 0
+
+
+def count_push_subscriptions(db_path: Path | None = None) -> int:
+    init_db(db_path)
+    with connect(db_path) as conn:
+        return conn.execute(
+            "SELECT COUNT(*) AS n FROM push_subscriptions").fetchone()["n"]
+
+
+# ---------------------------------------------------------------------------
+# App key/value store (survives re-import)
+# ---------------------------------------------------------------------------
+def kv_get(key: str, default=None, db_path: Path | None = None):
+    init_db(db_path)
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT value FROM app_kv WHERE key = ?", (key,)).fetchone()
+    if not row:
+        return default
+    try:
+        return json.loads(row["value"])
+    except (json.JSONDecodeError, TypeError):
+        return row["value"]
+
+
+def kv_set(key: str, value, db_path: Path | None = None) -> None:
+    init_db(db_path)
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO app_kv (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, json.dumps(value)))
+
+
+def touch_activity(db_path: Path | None = None) -> None:
+    """Record that the app just talked to the API (used to suppress reminders
+    while it's open in the foreground). Written cheaply on every API call."""
+    kv_set("last_activity", _now(), db_path=db_path)
+
+
+def last_activity(db_path: Path | None = None) -> str | None:
+    """ISO timestamp of the most recent API call, or None if never seen."""
+    return kv_get("last_activity", default=None, db_path=db_path)
+
+
+# ---------------------------------------------------------------------------
+# Notification de-duplication log
+# ---------------------------------------------------------------------------
+def notification_already_sent(dedup_key: str, db_path: Path | None = None) -> bool:
+    init_db(db_path)
+    with connect(db_path) as conn:
+        return conn.execute(
+            "SELECT 1 FROM notification_log WHERE dedup_key = ?",
+            (dedup_key,)).fetchone() is not None
+
+
+def record_notification(dedup_key: str, ntype: str, title: str, body: str,
+                        db_path: Path | None = None) -> bool:
+    """Mark a notification as sent. Returns False if this dedup_key already fired
+    (the INSERT is ignored), so callers can use it as an atomic claim."""
+    init_db(db_path)
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO notification_log "
+            "(dedup_key, ntype, title, body, sent_at) VALUES (?, ?, ?, ?, ?)",
+            (dedup_key, ntype, title, body, _now()))
+    return cur.rowcount > 0
+
+
+def recent_notifications(limit: int = 20, db_path: Path | None = None) -> list[dict]:
+    init_db(db_path)
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT dedup_key, ntype, title, body, sent_at FROM notification_log "
+            "ORDER BY sent_at DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_meta(db_path: Path | None = None) -> dict:

@@ -39,6 +39,39 @@ const num = (v, d = 0) => (v == null || isNaN(v) ? d : Number(v));
 const round = (v, p = 0) => { const m = 10 ** p; return Math.round(num(v) * m) / m; };
 const fmt = (v, p = 0) => round(v, p).toLocaleString();
 const todayISO = () => new Date().toISOString().slice(0, 10);
+
+/* ============================================================
+   Imperial / US-customary units
+   ------------------------------------------------------------
+   Everything is stored in metric (kg, km, cm, ml, °C) so the math and goal
+   tracking stay consistent. We convert to US units only at the display edge,
+   and convert entry back to metric before POSTing. Macros (grams) and energy
+   (kcal) already match US nutrition labels, so they pass through unchanged.
+   ============================================================ */
+const UNIT_CONV = {
+  kg:   { to: "lb",    f: (v) => v * 2.2046226, inv: (v) => v / 2.2046226, dp: 1 },
+  cm:   { to: "in",    f: (v) => v / 2.54,      inv: (v) => v * 2.54,      dp: 1 },
+  km:   { to: "mi",    f: (v) => v * 0.6213712, inv: (v) => v / 0.6213712, dp: 2 },
+  degC: { to: "°F",    f: (v) => v * 9 / 5 + 32, inv: (v) => (v - 32) * 5 / 9, dp: 1 },
+  ml:   { to: "fl oz", f: (v) => v * 0.0338140, inv: (v) => v / 0.0338140, dp: 0 },
+};
+// Stored metric value+unit -> display { value, unit, dp }.
+function disp(value, unit) {
+  const c = UNIT_CONV[unit];
+  if (!c || value == null) return { value, unit, dp: 1 };
+  return { value: c.f(num(value)), unit: c.to, dp: c.dp };
+}
+// The US label for a metric unit (e.g. "kg" -> "lb"), unchanged if not metric.
+const dispUnit = (unit) => (UNIT_CONV[unit] ? UNIT_CONV[unit].to : unit);
+// Convert a display value back to its canonical metric value for storage.
+const toMetric = (value, unit) => (UNIT_CONV[unit] ? UNIT_CONV[unit].inv(num(value)) : num(value));
+// Rewrite serving text like "100 g" / "250 ml" to US units for display.
+function servingUS(s) {
+  if (!s) return s;
+  return String(s)
+    .replace(/(\d+(?:\.\d+)?)\s*ml\b/gi, (_, n) => `${round(num(n) * 0.0338140, 1)} fl oz`)
+    .replace(/(\d+(?:\.\d+)?)\s*g\b/gi, (_, n) => `${round(num(n) * 0.0352740, 1)} oz`);
+}
 function toast(msg) {
   const t = $("#toast");
   t.textContent = msg; t.classList.remove("hidden");
@@ -71,6 +104,9 @@ async function init() {
   wireUpload();
   wireSheet();
   wireTabs();
+  wireChrome();
+  wireSettings();
+  registerServiceWorker();   // PWA + push; safe no-op where unsupported
   try {
     const status = await api("/api/status");
     State.status = status;
@@ -93,6 +129,37 @@ function enterApp() {
   const r = State.status?.date_range;
   $("#topbarSub").textContent = State.advisorReady ? "Your health coach" : "Set ANTHROPIC_API_KEY for coaching";
   switchTab(State.tab);
+  // appView was display:none until now, so the topbar/tabbar had no measurable
+  // height; measure them now that they're laid out.
+  syncChrome();
+  maybePromptNotifications();   // gentle first-run nudge to turn on reminders
+}
+
+/* ------------------------------------------------------------
+   Keep the coach (chat) layout pinned to the *real* app chrome.
+   We measure the topbar + tabbar instead of trusting the hardcoded
+   --topbar-h / --tabbar-h guesses (those drift with safe-area insets,
+   dynamic type and iOS's collapsing toolbar under viewport-fit=cover),
+   and track visualViewport so the composer rides above the software
+   keyboard instead of being pushed behind the tabbar. styles.css reads
+   --topbar-h / --tabbar-h / --app-h from here.
+   ------------------------------------------------------------ */
+function syncChrome() {
+  const root = document.documentElement.style;
+  const topbar = $(".topbar"), tabbar = $(".tabbar");
+  if (topbar && topbar.offsetHeight) root.setProperty("--topbar-h", topbar.offsetHeight + "px");
+  if (tabbar && tabbar.offsetHeight) root.setProperty("--tabbar-h", tabbar.offsetHeight + "px");
+  const vv = window.visualViewport;
+  root.setProperty("--app-h", Math.round(vv ? vv.height : window.innerHeight) + "px");
+}
+function wireChrome() {
+  const sync = () => requestAnimationFrame(syncChrome);
+  window.addEventListener("resize", sync);
+  window.addEventListener("orientationchange", sync);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", sync);
+    window.visualViewport.addEventListener("scroll", sync);
+  }
 }
 
 /* ============================================================
@@ -207,14 +274,24 @@ function wireSheet() {
   $("#sheetClose").addEventListener("click", closeSheet);
   $("#sheet").addEventListener("click", (e) => { if (e.target.id === "sheet") closeSheet(); });
 }
+// Some sheets hold live resources (e.g. an open camera for barcode scanning).
+// They register a teardown that runs whenever the sheet is replaced or closed.
+let sheetCleanup = null;
+function onSheetClose(fn) { sheetCleanup = fn; }
+function runSheetCleanup() {
+  if (!sheetCleanup) return;
+  const fn = sheetCleanup; sheetCleanup = null;
+  try { fn(); } catch {}
+}
 function openSheet(title, bodyNode) {
+  runSheetCleanup();
   $("#sheetTitle").textContent = title;
   const body = $("#sheetBody");
   body.innerHTML = "";
   body.append(bodyNode);
   $("#sheet").classList.remove("hidden");
 }
-function closeSheet() { $("#sheet").classList.add("hidden"); }
+function closeSheet() { runSheetCleanup(); $("#sheet").classList.add("hidden"); }
 
 /* ============================================================
    DASHBOARD
@@ -238,16 +315,18 @@ async function renderDashboard() {
 
   // Stat grid
   const n = d.nutrition, w = d.water;
+  const wTotal = disp(w.total_ml, "ml"), wGoal = disp(w.goal_ml, "ml");
+  const weight = d.weight ? disp(d.weight.value, "kg") : null;
   const grid = el("div", { class: "stat-grid" });
   grid.append(
     statCard("🔥 Calories", n.kcal ? fmt(n.kcal) : "—", n.kcal_goal ? `of ${fmt(n.kcal_goal)} kcal` : "logged today",
       n.kcal_goal ? pct(n.kcal, n.kcal_goal) : null),
     statCard("💪 Protein", n.protein ? fmt(n.protein) + "g" : "—", n.protein_goal ? `of ${fmt(n.protein_goal)}g` : "today",
       n.protein_goal ? pct(n.protein, n.protein_goal) : null, "blue"),
-    statCard("💧 Water", fmt(w.total_ml) + "ml", `of ${fmt(w.goal_ml)}ml`, w.pct, "blue"),
+    statCard("💧 Water", fmt(wTotal.value) + " fl oz", `of ${fmt(wGoal.value)} fl oz`, w.pct, "blue"),
     statCard("👟 Steps", d.steps_today != null ? fmt(d.steps_today) : "—", "today"),
     statCard("⚡ Active energy", d.active_energy_today != null ? fmt(d.active_energy_today) + " kcal" : "—", "today"),
-    statCard("⚖️ Weight", d.weight ? fmt(d.weight.value, 1) + " kg" : "—", d.weight ? d.weight.date : "no data"),
+    statCard("⚖️ Weight", weight ? fmt(weight.value, 1) + " lb" : "—", d.weight ? d.weight.date : "no data"),
     statCard("😴 Sleep", d.sleep_last ? round(d.sleep_last.asleep_hours, 1) + "h" : "—", d.sleep_last ? "last night" : "no data"),
     statCard("🏋 Workouts", d.workouts_week, "this week"));
   screen.append(grid);
@@ -403,9 +482,20 @@ async function openFoodSearch(meal) {
   const body = el("div", {});
   const search = el("input", { type: "search", placeholder: "Search foods…", autocomplete: "off" });
   const results = el("div", { class: "list" });
-  const customBtn = el("button", { class: "btn secondary full", style: "margin-top:12px",
+  // Photo logging: a hidden file input the camera button triggers. `capture`
+  // hints the rear camera on phones; on desktop it falls back to a file picker.
+  const photoInput = el("input", { type: "file", accept: "image/*", capture: "environment", style: "display:none" });
+  photoInput.addEventListener("change", () => {
+    const f = photoInput.files[0]; photoInput.value = "";
+    if (f) analyzeFoodPhoto(f, meal);
+  });
+  const photoBtn = el("button", { class: "btn full", style: "margin-top:12px",
+    onclick: () => photoInput.click() }, "📷 Snap a photo");
+  const scanBtn = el("button", { class: "btn secondary full", style: "margin-top:10px",
+    onclick: () => openBarcodeScanner(meal) }, "▦ Scan barcode");
+  const customBtn = el("button", { class: "btn secondary full", style: "margin-top:10px",
     onclick: () => openCustomFood(meal) }, "+ Create custom food");
-  body.append(el("div", { class: "field" }, search), results, customBtn);
+  body.append(el("div", { class: "field" }, search), results, photoInput, photoBtn, scanBtn, customBtn);
   openSheet(`Add to ${meal}`, body);
 
   const run = async (q) => {
@@ -415,9 +505,9 @@ async function openFoodSearch(meal) {
       el("div", { class: "food-result", onclick: () => openFoodQty(f, meal) },
         el("div", { class: "fr-main" },
           el("div", { class: "fr-name" }, f.name),
-          el("div", { class: "fr-sub" }, `${f.serving || "1 serving"} · ${fmt(f.protein)}P ${fmt(f.carbs)}C ${fmt(f.fat)}F`)),
+          el("div", { class: "fr-sub" }, `${servingUS(f.serving) || "1 serving"} · ${fmt(f.protein)}P ${fmt(f.carbs)}C ${fmt(f.fat)}F`)),
         el("div", { class: "fr-kcal" }, fmt(f.kcal)))));
-    if (!foods.length) results.append(el("div", { class: "empty" }, "No matches — create a custom food."));
+    if (!foods.length) results.append(el("div", { class: "empty" }, "No matches — snap a photo or create a custom food."));
   };
   let timer;
   search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => run(search.value), 180); });
@@ -432,7 +522,7 @@ function openFoodQty(food, meal) {
     `${fmt(food.kcal * q)} kcal · ${fmt(food.protein * q)}P ${fmt(food.carbs * q)}C ${fmt(food.fat * q)}F`; };
   qty.addEventListener("input", upd); upd();
   const body = el("div", {},
-    el("p", { class: "muted", style: "margin-top:0" }, `${food.name} — ${food.serving || "per serving"}`),
+    el("p", { class: "muted", style: "margin-top:0" }, `${food.name} — ${servingUS(food.serving) || "per serving"}`),
     el("div", { class: "field" }, el("label", {}, "Servings"), qty), out,
     el("button", { class: "btn full", style: "margin-top:14px", onclick: async () => {
       await jpost("/api/food", { name: food.name, kcal: food.kcal, protein: food.protein,
@@ -463,19 +553,215 @@ function openCustomFood(meal) {
     } }, "Save & log"));
   openSheet("Custom food", body);
 }
+
+// Photo logging: send the picked image to the AI, then open a prefilled review.
+async function analyzeFoodPhoto(file, meal) {
+  openSheet("Analyzing photo", el("div", { class: "empty" },
+    el("div", { class: "thinking dots" }, "🔍 Estimating macros from your photo")));
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const { estimate } = await api("/api/food/analyze", { method: "POST", body: fd });
+    openFoodReview(estimate, meal);
+  } catch (e) {
+    openSheet("Photo analysis", el("div", {},
+      el("div", { class: "empty" }, "⚠ " + e.message),
+      el("button", { class: "btn full", onclick: () => openFoodSearch(meal) }, "Back")));
+  }
+}
+// Review/adjust an estimate (AI photo or scanned barcode) before logging it.
+function openFoodReview(est, meal, opts = {}) {
+  const title = opts.title || "Review estimate";
+  const intro = opts.intro || "AI estimate from your photo — review and adjust, then save.";
+  const f = {};
+  const numField = (k, label, val) => {
+    const i = el("input", { type: "number", step: "any", inputmode: "decimal",
+      value: val != null ? round(val, 1) : "" });
+    f[k] = i;
+    return el("div", { class: "field grow" }, el("label", {}, label), i);
+  };
+  const name = el("input", { value: est.name || "" });
+  const serving = el("input", { value: est.serving || "", placeholder: "e.g. 6 oz" });
+  const body = el("div", {},
+    el("p", { class: "muted", style: "margin-top:0" }, intro),
+    est.notes ? el("p", { class: "muted", style: "font-size:13px" }, "📝 " + est.notes) : null,
+    el("div", { class: "field" }, el("label", {}, "Food"), name),
+    el("div", { class: "field" }, el("label", {}, "Serving"), serving),
+    el("div", { class: "row" }, numField("kcal", "Calories"), numField("protein", "Protein (g)")),
+    el("div", { class: "row" }, numField("carbs", "Carbs (g)"), numField("fat", "Fat (g)")),
+    el("div", { class: "row" }, numField("fiber", "Fiber (g)"), numField("sugar", "Sugar (g)")),
+    el("div", { class: "row" }, numField("sodium", "Sodium (mg)")),
+    el("button", { class: "btn full", style: "margin-top:8px", onclick: async () => {
+      if (!name.value.trim()) return toast("Name required");
+      await jpost("/api/food", {
+        name: name.value.trim(), serving: serving.value, meal, qty: 1, date: State.foodDate,
+        kcal: num(f.kcal.value), protein: num(f.protein.value),
+        carbs: num(f.carbs.value), fat: num(f.fat.value),
+        fiber: num(f.fiber.value), sugar: num(f.sugar.value), sodium: num(f.sodium.value),
+      });
+      closeSheet(); toast("Logged " + name.value.trim()); switchTab("food");
+    } }, "Log food"));
+  // Seed the inputs with the estimate (after build so refs exist).
+  f.kcal.value = est.kcal != null ? round(est.kcal, 1) : "";
+  f.protein.value = est.protein != null ? round(est.protein, 1) : "";
+  f.carbs.value = est.carbs != null ? round(est.carbs, 1) : "";
+  f.fat.value = est.fat != null ? round(est.fat, 1) : "";
+  f.fiber.value = est.fiber != null ? round(est.fiber, 1) : "";
+  f.sugar.value = est.sugar != null ? round(est.sugar, 1) : "";
+  f.sodium.value = est.sodium != null ? round(est.sodium, 0) : "";
+  openSheet(title, body);
+}
+
+/* ------------------------------------------------------------
+   Barcode scanning (Food tab)
+   ------------------------------------------------------------
+   Live-camera UPC/EAN scan via QuaggaJS, then a free, key-less
+   nutrition lookup against Open Food Facts (public CORS API, so the
+   request stays client-side — no backend proxy needed). On a confirmed
+   read we map the response into the same `est` shape the photo flow
+   uses and hand off to openFoodReview so the user reviews and adjusts.
+   ------------------------------------------------------------ */
+async function openBarcodeScanner(meal) {
+  if (!window.Quagga) { toast("Scanner not available"); return openFoodSearch(meal); }
+  const viewport = el("div", { class: "scanner-view", id: "scannerView" });
+  const status = el("div", { class: "muted", style: "text-align:center;margin-top:10px" },
+    "Point your camera at a barcode");
+  // Manual fallback for damaged labels or when the camera is unavailable.
+  const manual = el("input", { type: "text", inputmode: "numeric", autocomplete: "off",
+    placeholder: "or type the barcode number" });
+  const manualBtn = el("button", { class: "btn secondary full", style: "margin-top:10px",
+    onclick: () => { const code = manual.value.replace(/\D/g, ""); if (code.length >= 8) lookupBarcode(code, meal);
+      else toast("Enter a valid barcode"); } }, "Look up");
+  const body = el("div", {}, viewport, status,
+    el("div", { class: "field", style: "margin-top:14px" }, manual), manualBtn);
+  openSheet("Scan barcode", body);
+
+  let done = false;          // guard so we only act on the first solid read
+  let lastCode = null;       // require two consecutive matching reads to confirm
+  const onDetected = (result) => {
+    const code = result?.codeResult?.code;
+    if (!code || done) return;
+    if (code === lastCode) {
+      done = true;
+      runSheetCleanup();     // stop the camera before we navigate on
+      lookupBarcode(code, meal);
+    } else {
+      lastCode = code;
+      status.textContent = "Reading…";
+    }
+  };
+  const teardown = () => {
+    try { Quagga.offDetected(onDetected); } catch {}
+    try { Quagga.stop(); } catch {}
+  };
+  onSheetClose(teardown);
+
+  Quagga.init({
+    inputStream: {
+      name: "Live", type: "LiveStream", target: viewport,
+      constraints: { facingMode: "environment" },
+    },
+    locator: { patchSize: "medium", halfSample: true },
+    decoder: { readers: ["ean_reader", "ean_8_reader", "upc_reader", "upc_e_reader"] },
+  }, (err) => {
+    if (err) {
+      onSheetClose(null);
+      const denied = /permission|denied|notallowed/i.test(String(err.name || err.message || err));
+      status.className = "empty";
+      status.textContent = denied
+        ? "⚠ Camera access was blocked. Allow camera access, or type the barcode below."
+        : "⚠ Couldn't start the camera. Type the barcode below instead.";
+      return;
+    }
+    Quagga.start();
+  });
+  Quagga.onDetected(onDetected);
+}
+
+// Look up a UPC/EAN against Open Food Facts and pre-fill the review form.
+async function lookupBarcode(code, meal) {
+  openSheet("Looking up…", el("div", { class: "empty" },
+    el("div", { class: "thinking dots" }, `🔎 Looking up barcode ${code}`)));
+  try {
+    const fields = "code,product_name,product_name_en,generic_name,brands,serving_size,nutriments";
+    const res = await fetch(
+      `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=${fields}`);
+    const data = await res.json().catch(() => ({}));
+    const product = data.product;
+    const found = product && (data.status === 1 || data.status === "success" ||
+      product.product_name || product.nutriments);
+    if (!found) return barcodeNotFound(code, meal);
+    const est = offToEstimate(product, code);
+    openFoodReview(est, meal, {
+      title: "Review scan",
+      intro: "Pulled from Open Food Facts — review and adjust, then save.",
+    });
+  } catch (e) {
+    barcodeNotFound(code, meal, "Couldn't reach Open Food Facts.");
+  }
+}
+
+// Map an Open Food Facts product to the `est` shape openFoodReview expects.
+// Macros are grams/kcal (already US-label units); sodium is mg. Open Food
+// Facts stores values per-100g and (often) per-serving — we prefer per-serving
+// when present so the logged entry matches one serving off the package.
+function offToEstimate(product, code) {
+  const n = product.nutriments || {};
+  const perServing = n["energy-kcal_serving"] != null;
+  const suffix = perServing ? "_serving" : "_100g";
+  const g = (base) => { const v = n[base + suffix]; return v != null ? Number(v) : null; };
+  const kcal = g("energy-kcal");
+  // Open Food Facts reports sodium (and salt) in grams; the form wants mg.
+  let sodiumG = g("sodium");
+  if (sodiumG == null && g("salt") != null) sodiumG = g("salt") / 2.5; // salt → sodium
+  const servingText = perServing ? (product.serving_size || "1 serving") : "100 g";
+  const name = product.product_name || product.product_name_en || product.generic_name || "Scanned item";
+  const brand = product.brands ? String(product.brands).split(",")[0].trim() : "";
+  // Prefix the brand for context, unless the product name already carries it.
+  const displayName = brand && !name.toLowerCase().includes(brand.toLowerCase())
+    ? `${brand} ${name}` : name;
+  return {
+    name: displayName,
+    serving: servingUS(servingText),
+    kcal,
+    protein: g("proteins"),
+    carbs: g("carbohydrates"),
+    fat: g("fat"),
+    fiber: g("fiber"),
+    sugar: g("sugars"),
+    sodium: sodiumG != null ? sodiumG * 1000 : null,
+  };
+}
+
+// No match (or lookup failed): let the user retry, type it, or fall back.
+function barcodeNotFound(code, meal, msg) {
+  const body = el("div", {},
+    el("div", { class: "empty" }, msg
+      ? `⚠ ${msg}`
+      : `No product found for barcode ${code}. It may not be in the Open Food Facts database yet.`),
+    el("button", { class: "btn full", style: "margin-top:8px",
+      onclick: () => openBarcodeScanner(meal) }, "▦ Scan again"),
+    el("button", { class: "btn secondary full", style: "margin-top:10px",
+      onclick: () => openCustomFood(meal) }, "+ Enter it manually"),
+    el("button", { class: "btn secondary full", style: "margin-top:10px",
+      onclick: () => openFoodSearch(meal) }, "Back to search"));
+  openSheet("Barcode", body);
+}
+
 async function quickWater() {
   const body = el("div", {});
   const row = el("div", { class: "row wrap" });
-  [250, 500, 750, 1000].forEach((ml) =>
+  // Common amounts in fluid ounces; water is stored in ml.
+  [8, 12, 16, 20, 32].forEach((oz) =>
     row.append(el("button", { class: "pill", onclick: async () => {
-      await jpost("/api/water", { amount_ml: ml }); closeSheet(); toast(`+${ml}ml water`);
+      await jpost("/api/water", { amount_ml: toMetric(oz, "ml") }); closeSheet(); toast(`+${oz} oz water`);
       if (State.tab === "dashboard") switchTab("dashboard");
-    } }, `+${ml}ml`)));
-  const custom = el("input", { type: "number", placeholder: "Custom ml", inputmode: "numeric" });
+    } }, `+${oz} oz`)));
+  const custom = el("input", { type: "number", placeholder: "Custom fl oz", inputmode: "decimal" });
   body.append(el("p", { class: "muted", style: "margin-top:0" }, "Quick add"), row,
     el("div", { class: "field", style: "margin-top:14px" }, custom),
     el("button", { class: "btn full", onclick: async () => {
-      if (!num(custom.value)) return; await jpost("/api/water", { amount_ml: num(custom.value) });
+      if (!num(custom.value)) return; await jpost("/api/water", { amount_ml: toMetric(num(custom.value), "ml") });
       closeSheet(); toast("Water logged"); if (State.tab === "dashboard") switchTab("dashboard");
     } }, "Add"));
   openSheet("Water", body);
@@ -499,19 +785,20 @@ async function renderWorkouts() {
   } catch (e) { screen.lastChild.replaceWith(el("div", { class: "empty" }, "⚠ " + e.message)); return; }
   screen.lastChild.remove();
 
-  // Volume chart
+  // Volume chart (strength volume = Σ reps×weight, stored in kg → shown in lb)
   if (vol.series.length) {
-    const { card, canvas } = chartCard(`Strength volume — 30 days (${fmt(vol.total_volume)} total, ${vol.sessions} sessions)`);
+    const totalLb = disp(vol.total_volume, "kg").value;
+    const { card, canvas } = chartCard(`Strength volume — 30 days (${fmt(totalLb)} lb total, ${vol.sessions} sessions)`);
     screen.append(card);
     makeChart(canvas, {
       type: "bar",
       data: { labels: vol.series.map((r) => r.date.slice(5)),
-        datasets: [{ data: vol.series.map((r) => r.volume), backgroundColor: VIOLET + "cc", borderRadius: 5 }] },
+        datasets: [{ data: vol.series.map((r) => disp(r.volume, "kg").value), backgroundColor: VIOLET + "cc", borderRadius: 5 }] },
       options: { scales: { ...AXES, y: { ...AXES.y, beginAtZero: true } } },
     });
   }
 
-  // PRs
+  // PRs (weights stored in kg → shown in lb)
   if (prs.records.length) {
     const card = el("div", { class: "card" }, el("div", { class: "card-head" }, el("h3", {}, "Personal records")));
     const list = el("div", { class: "list" });
@@ -519,8 +806,8 @@ async function renderWorkouts() {
       el("div", { class: "lrow" },
         el("div", { class: "l-icon" }, "📈"),
         el("div", { class: "l-main" }, el("div", { class: "l-title" }, r.name),
-          el("div", { class: "l-sub" }, `est. 1RM ${fmt(r.e1rm, 1)} · ${r.date}`)),
-        el("div", { class: "l-val" }, fmt(r.weight, 1), el("small", {}, " ×" + fmt(r.reps))))));
+          el("div", { class: "l-sub" }, `est. 1RM ${fmt(disp(r.e1rm, "kg").value, 1)} lb · ${r.date}`)),
+        el("div", { class: "l-val" }, fmt(disp(r.weight, "kg").value, 1), el("small", {}, " lb ×" + fmt(r.reps))))));
     card.append(list); screen.append(card);
   }
 
@@ -534,7 +821,7 @@ async function renderWorkouts() {
 function workoutRow(w) {
   const bits = [];
   if (w.duration_min) bits.push(round(w.duration_min) + " min");
-  if (w.distance_km) bits.push(round(w.distance_km, 1) + " km");
+  if (w.distance_km) bits.push(round(disp(w.distance_km, "km").value, 1) + " mi");
   if (w.energy_kcal) bits.push(round(w.energy_kcal) + " kcal");
   if (w.exercises?.length) bits.push(w.exercises.length + " exercises");
   const row = el("div", { class: "lrow" },
@@ -572,7 +859,7 @@ function openWorkoutSheet() {
       repaint();
     } else {
       const dur = el("input", { type: "number", inputmode: "decimal", placeholder: "min" });
-      const dist = el("input", { type: "number", inputmode: "decimal", placeholder: "km" });
+      const dist = el("input", { type: "number", inputmode: "decimal", placeholder: "mi" });
       const kcal = el("input", { type: "number", inputmode: "numeric", placeholder: "kcal" });
       dynamic._cardio = { dur, dist, kcal };
       dynamic.append(el("div", { class: "row" },
@@ -589,12 +876,14 @@ function openWorkoutSheet() {
     if (type.value === "strength") {
       payload.exercises = exercises
         .map((ex) => ({ name: ex.name, sets: ex.sets.filter((s) => s.reps || s.weight)
-          .map((s) => ({ reps: num(s.reps), weight: num(s.weight) })) }))
+          // Weight entered in lb; stored in kg.
+          .map((s) => ({ reps: num(s.reps), weight: toMetric(num(s.weight), "kg") })) }))
         .filter((ex) => ex.name && ex.sets.length);
       if (!payload.exercises.length) return toast("Add at least one exercise");
     } else if (dynamic._cardio) {
       payload.duration_min = num(dynamic._cardio.dur.value) || null;
-      payload.distance_km = num(dynamic._cardio.dist.value) || null;
+      // Distance entered in miles; stored in km.
+      payload.distance_km = num(dynamic._cardio.dist.value) ? toMetric(num(dynamic._cardio.dist.value), "km") : null;
       payload.energy_kcal = num(dynamic._cardio.kcal.value) || null;
     }
     await jpost("/api/workouts", payload);
@@ -614,7 +903,7 @@ function exerciseBlock(ex, idx, onRemove) {
     sets.innerHTML = "";
     ex.sets.forEach((s, i) => {
       const reps = el("input", { type: "number", inputmode: "numeric", placeholder: "reps", value: s.reps });
-      const wt = el("input", { type: "number", inputmode: "decimal", placeholder: "kg", value: s.weight });
+      const wt = el("input", { type: "number", inputmode: "decimal", placeholder: "lb", value: s.weight });
       reps.addEventListener("input", () => { s.reps = reps.value; });
       wt.addEventListener("input", () => { s.weight = wt.value; });
       sets.append(el("div", { class: "exset" }, el("span", { class: "setno" }, i + 1),
@@ -632,9 +921,16 @@ function exerciseBlock(ex, idx, onRemove) {
    ============================================================ */
 async function renderBody() {
   const screen = $("#screen");
+  // Hidden file input for importing a smart-scale .xlsx export.
+  const xlsxInput = el("input", { type: "file", accept: ".xlsx,.xlsm", hidden: true,
+    onchange: () => xlsxInput.files[0] && importBodyXlsx(xlsxInput.files[0]) });
   screen.append(el("div", { class: "screen-head" },
     el("div", {}, el("h2", {}, "Body")),
-    el("button", { class: "btn", onclick: openBodySheet }, "+ Log")));
+    el("div", { class: "head-actions" },
+      el("button", { class: "ghost-btn", title: "Import a smart-scale .xlsx export",
+        onclick: () => xlsxInput.click() }, "⬆ Import xlsx"),
+      el("button", { class: "btn", onclick: openBodySheet }, "+ Log")),
+    xlsxInput));
   screen.append(loading());
   let data;
   try { data = await api("/api/body?days=365"); }
@@ -642,24 +938,29 @@ async function renderBody() {
   screen.lastChild.remove();
 
   if (!data.metrics.length) {
-    screen.append(el("div", { class: "empty" }, "No body or vitals data yet. Tap + Log to record a measurement, or import Apple Health."));
+    screen.append(el("div", { class: "empty" }, "No body or vitals data yet. Tap + Log to record a measurement, import a smart-scale xlsx, or import Apple Health."));
     return;
   }
-  // order: weight & body comp first
-  const order = ["body_mass", "body_fat", "lean_body_mass", "waist", "chest", "hips", "arm", "thigh", "resting_heart_rate", "bp_systolic", "bp_diastolic"];
+  // order: weight & body composition first, then circumferences, then vitals.
+  const order = ["body_mass", "bmi", "body_fat", "fat_content", "muscle_mass",
+    "muscle_mass_pct", "lean_body_mass", "skeletal_muscle", "body_water",
+    "protein_pct", "bone_mass", "subcutaneous_fat", "visceral_fat", "bmr",
+    "metabolic_age", "waist", "chest", "hips", "arm", "thigh",
+    "resting_heart_rate", "bp_systolic", "bp_diastolic"];
   data.metrics.sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
   data.metrics.forEach((m) => {
     const s = m.summary;
+    const u = dispUnit(m.unit);
     const { card, canvas } = chartCard("");
     card.prepend(el("div", { class: "card-head" },
       el("h3", {}, m.label),
-      el("div", {}, el("span", { class: "value", style: "font-size:18px" }, fmt(s.latest, 1)),
-        el("span", { class: "muted", style: "font-size:12px" }, " " + m.unit + trendArrow(s.trend)))));
+      el("div", {}, el("span", { class: "value", style: "font-size:18px" }, fmt(disp(s.latest, m.unit).value, 1)),
+        el("span", { class: "muted", style: "font-size:12px" }, " " + u + trendArrow(s.trend)))));
     screen.append(card);
     makeChart(canvas, {
       type: "line",
       data: { labels: m.series.map((r) => r.date.slice(2)),
-        datasets: [lineDataset(m.label, m.series.map((r) => r.value), m.area === "heart" ? CORAL : TEAL)] },
+        datasets: [lineDataset(m.label, m.series.map((r) => disp(r.value, m.unit).value), m.area === "heart" ? CORAL : TEAL)] },
       options: { scales: AXES },
     });
   });
@@ -671,7 +972,10 @@ function trendArrow(t) {
 }
 function openBodySheet() {
   const mm = State.config.manual_metrics;
-  const metric = el("select", {}, ...Object.entries(mm).map(([k, c]) => el("option", { value: k }, `${c.label} (${c.unit})`)));
+  const metric = el("select", {}, ...Object.entries(mm).map(([k, c]) => {
+    const u = dispUnit(c.unit);
+    return el("option", { value: k }, u ? `${c.label} (${u})` : c.label);
+  }));
   const value = el("input", { type: "number", step: "any", inputmode: "decimal", placeholder: "Value" });
   const date = el("input", { type: "date", value: todayISO() });
   const body = el("div", {},
@@ -680,10 +984,28 @@ function openBodySheet() {
     el("div", { class: "field" }, el("label", {}, "Date"), date),
     el("button", { class: "btn full", onclick: async () => {
       if (!value.value) return toast("Enter a value");
-      await jpost("/api/body", { metric: metric.value, value: num(value.value), date: date.value });
+      // Value entered in display units; stored in the metric's canonical unit.
+      const canonical = toMetric(num(value.value), mm[metric.value].unit);
+      await jpost("/api/body", { metric: metric.value, value: canonical, date: date.value });
       closeSheet(); toast("Logged"); switchTab("body");
     } }, "Save"));
   openSheet("Log measurement", body);
+}
+
+// Upload a smart-scale .xlsx export (Renpho/Withings-style) to POST
+// /api/import/body, then refresh the Body tab to show the imported series.
+async function importBodyXlsx(file) {
+  toast("Importing " + file.name + "…");
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const s = await api("/api/import/body", { method: "POST", body: fd });
+    const rng = s.date_range ? ` (${s.date_range.start} → ${s.date_range.end})` : "";
+    toast(`Imported ${s.dates_imported} day${s.dates_imported === 1 ? "" : "s"}${rng}`);
+    switchTab("body");
+  } catch (e) {
+    toast("⚠ " + e.message);
+  }
 }
 
 /* ============================================================
@@ -779,9 +1101,11 @@ async function renderGoals() {
   }
 }
 function goalRow(g, compact) {
-  const cur = g.current, tgt = g.target;
   const p = g.progress;
-  const sub = (cur != null ? `${fmt(cur, 1)}` : "—") + (tgt != null ? ` / ${fmt(tgt, 1)} ${g.unit || ""}` : "");
+  // Current/target are stored in metric; show them in US units.
+  const cur = g.current != null ? disp(g.current, g.unit).value : null;
+  const tgt = g.target != null ? disp(g.target, g.unit).value : null;
+  const sub = (cur != null ? `${fmt(cur, 1)}` : "—") + (tgt != null ? ` / ${fmt(tgt, 1)} ${dispUnit(g.unit) || ""}` : "");
   const node = el("div", { class: "lrow", style: "border:none;padding:9px 0;flex-wrap:wrap" },
     el("div", { class: "l-main" },
       el("div", { class: "l-title" }, g.label),
@@ -806,15 +1130,25 @@ function openGoalSheet(existing) {
   const direction = el("select", {}, el("option", { value: "increase" }, "Increase ▲"),
     el("option", { value: "decrease" }, "Decrease ▼"), el("option", { value: "maintain" }, "Maintain →"));
   const tdate = el("input", { type: "date" });
+  // Show the target/baseline inputs in US units (e.g. lb for weight, fl oz for water).
+  const unitHint = () => {
+    const u = dispUnit(cats[category.value]?.unit);
+    target.placeholder = u ? `Target (${u})` : "Target";
+    baseline.placeholder = u ? `Start ${u} (optional)` : "Starting value (optional)";
+  };
   if (existing) {
+    const u = cats[existing.category]?.unit;
     category.value = existing.category; label.value = existing.label;
-    target.value = existing.target ?? ""; baseline.value = existing.baseline ?? "";
+    target.value = existing.target != null ? round(disp(existing.target, u).value, 2) : "";
+    baseline.value = existing.baseline != null ? round(disp(existing.baseline, u).value, 2) : "";
     direction.value = existing.direction; tdate.value = existing.target_date || "";
     category.disabled = true;
+    unitHint();
   } else {
     const apply = () => { const c = cats[category.value];
       if (c && !label.value) label.placeholder = c.label;
-      if (category.value === "weight" || category.value === "body_fat") direction.value = "decrease"; };
+      if (category.value === "weight" || category.value === "body_fat") direction.value = "decrease";
+      unitHint(); };
     category.addEventListener("change", apply); apply();
   }
   const body = el("div", {},
@@ -826,9 +1160,12 @@ function openGoalSheet(existing) {
     el("div", { class: "field" }, el("label", {}, "Direction"), direction),
     el("div", { class: "field" }, el("label", {}, "Target date (optional)"), tdate),
     el("button", { class: "btn full", onclick: async () => {
+      // Target/baseline entered in US units; stored in the category's metric unit.
+      const gunit = cats[category.value].unit || "";
       const payload = { category: category.value, label: label.value || cats[category.value].label,
-        target: num(target.value) || null, baseline: baseline.value === "" ? null : num(baseline.value),
-        unit: cats[category.value].unit || "", direction: direction.value, target_date: tdate.value || null };
+        target: target.value === "" ? null : toMetric(num(target.value), gunit),
+        baseline: baseline.value === "" ? null : toMetric(num(baseline.value), gunit),
+        unit: gunit, direction: direction.value, target_date: tdate.value || null };
       if (existing) await jput("/api/goals/" + existing.id, payload);
       else await jpost("/api/goals", payload);
       closeSheet(); toast("Goal saved"); switchTab("goals");
@@ -839,9 +1176,14 @@ function openGoalSheet(existing) {
 /* ============================================================
    COACH (chat)
    ============================================================ */
-const chatHistory = [];
+// In-memory mirror of the on-screen conversation. The server (chat_messages
+// table) is the source of truth — this is just what's rendered, so switching
+// tabs re-paints without a refetch. chatOldestId/chatHasMore drive "load earlier".
+let chatHistory = [];
 let chatBusy = false;
-let coachStarted = false;
+let coachLoaded = false;   // have we fetched persisted history this session?
+let chatHasMore = false;   // older messages exist on the server
+let chatOldestId = null;   // id of the oldest message currently loaded
 
 function renderCoach() {
   const screen = $("#screen");
@@ -851,6 +1193,9 @@ function renderCoach() {
       el("p", { class: "muted", html: "Set <code>ANTHROPIC_API_KEY</code> in your <code>.env</code> and restart to enable your coach." })));
     return;
   }
+  const header = el("div", { class: "chat-header" },
+    el("span", { class: "chat-title" }, "Coach"),
+    el("button", { class: "chat-newchat", type: "button", title: "Clear this conversation and start fresh", onclick: newChat }, "＋ New chat"));
   const log = el("div", { class: "chat-log", id: "chatLog" });
   const sugg = el("div", { class: "suggestions" });
   [["Meal ideas", "meals"], ["Next workout", "workout"], ["Recovery check", "recovery"], ["This week's focus", "focus"]]
@@ -861,19 +1206,73 @@ function renderCoach() {
   const form = el("form", { class: "chat-form", onsubmit: (e) => { e.preventDefault(); const t = input.value.trim(); if (t) { input.value = ""; sendChat(t); } } },
     input, el("button", { class: "btn", type: "submit" }, "Send"));
 
-  screen.append(log, sugg, form);
+  screen.append(header, log, sugg, form);
 
-  // Re-hydrate prior conversation in this session.
-  chatHistory.forEach((m) => addMsg(m.role, m.content));
-  if (!coachStarted) {
-    coachStarted = true;
-    const plan = State.status?.plan;
-    if (plan) addMsg("assistant", "Welcome back. Your plan is in motion — want a check-in on how you're tracking, or is something on your mind?");
-    else if (State.status?.has_import) runBriefing();
-    else addMsg("assistant", "I'm your coach. Log a few days of food, workouts and sleep — or import your Apple Health data — and I'll build you a plan and start coaching.");
+  if (coachLoaded) renderChatLog();   // re-paint from the in-memory mirror
+  else loadChatHistory();             // first visit this session: fetch from server
+}
+
+// Fetch the persisted conversation once per session and render it (or, when
+// there's nothing yet, fall back to the coach's intro/briefing).
+async function loadChatHistory() {
+  coachLoaded = true;
+  try {
+    const data = await api("/api/chat/history?limit=50");
+    const msgs = data.messages || [];
+    chatHistory = msgs.map((m) => ({ role: m.role, content: m.content }));
+    chatHasMore = !!data.has_more;
+    chatOldestId = msgs.length ? msgs[0].id : null;
+  } catch (e) {
+    chatHistory = []; chatHasMore = false; chatOldestId = null;
   }
+  if (chatHistory.length) renderChatLog();
+  else coachIntro();
+}
+
+// First-run greeting when there's no saved conversation yet.
+function coachIntro() {
+  const plan = State.status?.plan;
+  if (plan) pushMsg("assistant", "Welcome back. Your plan is in motion — want a check-in on how you're tracking, or is something on your mind?");
+  else if (State.status?.has_import) runBriefing();
+  else pushMsg("assistant", "I'm your coach. Log a few days of food, workouts and sleep — or import your Apple Health data — and I'll build you a plan and start coaching.");
   scrollChat();
 }
+
+// Repaint the whole log from chatHistory. `toTop` keeps the view at the top
+// after prepending older messages (otherwise we settle at the bottom).
+function renderChatLog(toTop = false) {
+  const log = $("#chatLog"); if (!log) return;
+  log.innerHTML = "";
+  if (chatHasMore) log.append(el("button", { class: "chat-earlier", type: "button", onclick: loadEarlier }, "Load earlier messages"));
+  chatHistory.forEach((m) => addMsg(m.role, m.content));
+  if (toTop) log.scrollTop = 0; else scrollChat();
+}
+
+async function loadEarlier() {
+  if (chatBusy || !chatOldestId) return;
+  try {
+    const data = await api(`/api/chat/history?limit=50&before=${chatOldestId}`);
+    const msgs = data.messages || [];
+    if (msgs.length) {
+      chatHistory = msgs.map((m) => ({ role: m.role, content: m.content })).concat(chatHistory);
+      chatOldestId = msgs[0].id;
+    }
+    chatHasMore = !!data.has_more;
+    renderChatLog(true);
+  } catch (e) { /* leave the log as-is on failure */ }
+}
+
+async function newChat() {
+  if (chatBusy) return;
+  try { await jdel("/api/chat/history"); } catch (e) { /* clear locally regardless */ }
+  chatHistory = []; chatHasMore = false; chatOldestId = null;
+  const log = $("#chatLog"); if (log) log.innerHTML = "";
+  coachIntro();
+}
+
+// Render a message AND mirror it into chatHistory.
+function pushMsg(role, text) { chatHistory.push({ role, content: text }); return addMsg(role, text); }
+
 function addMsg(role, text, cls = "") {
   const log = $("#chatLog"); if (!log) return null;
   const node = el("div", { class: `msg ${role} ${cls}` });
@@ -888,18 +1287,18 @@ async function runBriefing() {
   try {
     const data = await api("/api/briefing", { method: "POST" });
     pending.className = "msg assistant"; pending.innerHTML = marked.parse(data.reply);
-    chatHistory.push({ role: "user", content: "[briefing]" }, { role: "assistant", content: data.reply });
+    chatHistory.push({ role: "assistant", content: data.reply });
     State.status.plan = data.plan;
   } catch (e) { pending.className = "msg assistant error"; pending.textContent = "⚠ " + e.message; }
   finally { chatBusy = false; scrollChat(); }
 }
 async function sendChat(text) {
   if (chatBusy) return; chatBusy = true;
-  addMsg("user", text); chatHistory.push({ role: "user", content: text });
+  pushMsg("user", text);
   const pending = addMsg("assistant", "Thinking", "thinking dots");
   try {
-    const data = await api("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: chatHistory }) });
+    // Only the new turn goes up — the server reloads prior history for context.
+    const data = await jpost("/api/chat", { messages: [{ role: "user", content: text }] });
     pending.className = "msg assistant"; pending.innerHTML = marked.parse(data.reply);
     chatHistory.push({ role: "assistant", content: data.reply });
     State.status.plan = data.plan;
@@ -908,12 +1307,228 @@ async function sendChat(text) {
 }
 async function recommend(topic, label) {
   if (chatBusy) return; chatBusy = true;
-  addMsg("user", label); chatHistory.push({ role: "user", content: label });
+  pushMsg("user", label);
   const pending = addMsg("assistant", "Thinking", "thinking dots");
   try {
-    const data = await jpost("/api/recommend", { topic });
+    const data = await jpost("/api/recommend", { topic, label });
     pending.className = "msg assistant"; pending.innerHTML = marked.parse(data.reply);
     chatHistory.push({ role: "assistant", content: data.reply });
   } catch (e) { pending.className = "msg assistant error"; pending.textContent = "⚠ " + e.message; chatHistory.pop(); }
   finally { chatBusy = false; scrollChat(); }
+}
+
+/* ============================================================
+   Push notifications & settings
+   ------------------------------------------------------------
+   Registers the service worker (making the app installable and able to
+   receive web push), manages this device's push subscription, and renders
+   the Settings sheet where the user enables push, tunes each reminder's
+   time, and sets quiet hours. Reminder *preferences* are server-side and
+   shared across devices; the push *subscription* is per-device.
+   ============================================================ */
+let swReg = null;          // active ServiceWorkerRegistration (or null)
+let vapidKey = null;       // cached base64url VAPID public key
+
+const pushSupported = () =>
+  "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    swReg = await navigator.serviceWorker.register("/sw.js");
+  } catch (e) {
+    console.warn("Service worker registration failed:", e);
+  }
+}
+
+function wireSettings() {
+  const btn = $("#settingsBtn");
+  if (btn) btn.addEventListener("click", openSettings);
+}
+
+// One-time, unobtrusive prompt to enable reminders on first run.
+function maybePromptNotifications() {
+  if (!pushSupported() || !State.status?.has_data) return;
+  if (Notification.permission !== "default") return;          // already decided
+  if (localStorage.getItem("notifPrompted")) return;          // asked before
+  localStorage.setItem("notifPrompted", "1");
+  const body = el("div", { class: "settings" },
+    el("p", { class: "muted" },
+      "Asclepius can send gentle reminders to log meals and water, train, wind " +
+      "down for sleep, and check in with your coach — only when you're behind, " +
+      "never during quiet hours."),
+    el("div", { class: "settings-actions" },
+      el("button", { class: "btn", onclick: async () => { closeSheet(); await enablePushFlow(); } }, "Enable reminders"),
+      el("button", { class: "btn secondary", onclick: closeSheet }, "Not now")));
+  openSheet("Stay on track 🔔", body);
+}
+
+const urlB64ToUint8Array = (base64) => {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const raw = atob((base64 + padding).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+};
+
+async function getVapidKey() {
+  if (vapidKey) return vapidKey;
+  const data = await api("/api/push/vapid");
+  if (!data.enabled || !data.public_key) throw new Error("Push isn't configured on the server.");
+  vapidKey = data.public_key;
+  return vapidKey;
+}
+
+async function currentSubscription() {
+  if (!swReg) swReg = await navigator.serviceWorker.ready.catch(() => null);
+  if (!swReg) return null;
+  return swReg.pushManager.getSubscription();
+}
+
+// Request permission, subscribe this browser, and register it with the server.
+async function enablePushFlow() {
+  if (!pushSupported()) { toast("This browser can't show notifications."); return false; }
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") { toast(perm === "denied" ? "Notifications are blocked in your browser settings." : "Notifications not enabled."); return false; }
+    if (!swReg) swReg = await navigator.serviceWorker.ready;
+    const key = await getVapidKey();
+    let sub = await swReg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await swReg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64ToUint8Array(key),
+      });
+    }
+    await jpost("/api/push/subscribe", { subscription: sub.toJSON(), user_agent: navigator.userAgent });
+    toast("Reminders enabled 🔔");
+    return true;
+  } catch (e) {
+    toast(e.message || "Couldn't enable notifications.");
+    return false;
+  }
+}
+
+async function disablePushFlow() {
+  try {
+    const sub = await currentSubscription();
+    if (sub) {
+      await jpost("/api/push/unsubscribe", { endpoint: sub.endpoint }).catch(() => {});
+      await sub.unsubscribe().catch(() => {});
+    }
+    toast("Reminders turned off on this device.");
+  } catch (e) { /* best effort */ }
+}
+
+/* ---- Settings sheet ---------------------------------------------------- */
+// A styled on/off switch wrapping a checkbox.
+function toggle(checked, onchange) {
+  const input = el("input", { type: "checkbox" });
+  input.checked = !!checked;
+  input.addEventListener("change", () => onchange(input.checked));
+  return el("label", { class: "switch" }, input, el("span", { class: "track" }));
+}
+
+async function openSettings() {
+  const body = el("div", { class: "settings" }, loading("Loading settings…"));
+  openSheet("Settings", body);
+  if (!pushSupported()) {
+    body.innerHTML = "";
+    body.append(el("p", { class: "muted" },
+      "This browser doesn't support web push notifications. Install Asclepius to " +
+      "your home screen (Share → Add to Home Screen) and open it from there to enable them."));
+    return;
+  }
+  let prefs, vapid;
+  try {
+    [prefs, vapid] = await Promise.all([api("/api/push/prefs"), api("/api/push/vapid")]);
+  } catch (e) {
+    body.innerHTML = ""; body.append(el("p", { class: "muted" }, "Couldn't load settings: " + e.message));
+    return;
+  }
+  const sub = await currentSubscription();
+  renderSettings(body, prefs, vapid, !!sub);
+}
+
+function renderSettings(body, prefs, vapid, subscribed) {
+  body.innerHTML = "";
+  const serverOff = !vapid.enabled;
+
+  // ---- This device --------------------------------------------------------
+  const deviceCard = el("div", { class: "settings-group" },
+    el("div", { class: "settings-row" },
+      el("div", {},
+        el("div", { class: "settings-label" }, "Push on this device"),
+        el("div", { class: "settings-desc" },
+          serverOff ? "Server has no VAPID key — push is disabled."
+            : Notification.permission === "denied" ? "Blocked in your browser settings."
+              : subscribed ? "Enabled — this device will receive reminders."
+                : "Off — turn on to receive reminders here.")),
+      serverOff ? null : toggle(subscribed, async (on) => {
+        if (on) await enablePushFlow(); else await disablePushFlow();
+        openSettings();   // re-read fresh state into the sheet
+      })));
+  if (!serverOff && subscribed) {
+    deviceCard.append(el("div", { class: "settings-actions" },
+      el("button", { class: "btn secondary", onclick: async (e) => {
+        const b = e.target; b.disabled = true; b.textContent = "Sending…";
+        try { await jpost("/api/push/send", {}); toast("Test sent — check your notifications."); }
+        catch (err) { toast(err.message); }
+        finally { b.disabled = false; b.textContent = "Send test notification"; }
+      } }, "Send test notification")));
+  }
+  body.append(el("h4", { class: "settings-head" }, "This device"), deviceCard);
+
+  if (serverOff) return;   // nothing below matters without push configured
+
+  // Live PUT of a preferences patch.
+  const save = async (patch) => {
+    try { await jput("/api/push/prefs", patch); }
+    catch (e) { toast("Couldn't save: " + e.message); }
+  };
+
+  // ---- Reminders ----------------------------------------------------------
+  body.append(el("h4", { class: "settings-head" }, "Reminders"));
+  const typesBox = el("div", { class: "settings-group" + (prefs.enabled ? "" : " dimmed") });
+  body.append(el("div", { class: "settings-group" },
+    el("div", { class: "settings-row" },
+      el("div", {},
+        el("div", { class: "settings-label" }, "All reminders"),
+        el("div", { class: "settings-desc" }, "Master switch — pause every reminder at once.")),
+      toggle(prefs.enabled, (on) => { prefs.enabled = on; save({ enabled: on }); typesBox.classList.toggle("dimmed", !on); }))));
+
+  prefs.types.forEach((t) => {
+    const timeInputs = el("div", { class: "settings-times" });
+    if (t.editable_time && t.time != null) {
+      const ti = el("input", { class: "time-input", type: "time", value: t.time });
+      ti.addEventListener("change", () => save({ types: { [t.key]: { time: ti.value } } }));
+      timeInputs.append(t.has_weekend ? el("label", { class: "time-lbl" }, "Weekday", ti) : ti);
+    }
+    if (t.has_weekend && t.time_weekend != null) {
+      const we = el("input", { class: "time-input", type: "time", value: t.time_weekend });
+      we.addEventListener("change", () => save({ types: { [t.key]: { time_weekend: we.value } } }));
+      timeInputs.append(el("label", { class: "time-lbl" }, "Weekend", we));
+    }
+    const row = el("div", { class: "settings-row stacked" },
+      el("div", { class: "settings-row" },
+        el("div", {},
+          el("div", { class: "settings-label" }, t.label),
+          el("div", { class: "settings-desc" }, t.desc)),
+        toggle(t.enabled, (on) => { t.enabled = on; save({ types: { [t.key]: { enabled: on } } }); row.classList.toggle("off", !on); })),
+      timeInputs);
+    if (!t.enabled) row.classList.add("off");
+    typesBox.append(row);
+  });
+  body.append(typesBox);
+
+  // ---- Quiet hours --------------------------------------------------------
+  body.append(el("h4", { class: "settings-head" }, "Quiet hours"));
+  const dndStart = el("input", { class: "time-input", type: "time", value: prefs.dnd_start });
+  const dndEnd = el("input", { class: "time-input", type: "time", value: prefs.dnd_end });
+  dndStart.addEventListener("change", () => save({ dnd_start: dndStart.value }));
+  dndEnd.addEventListener("change", () => save({ dnd_end: dndEnd.value }));
+  body.append(el("div", { class: "settings-group" },
+    el("div", { class: "settings-row" },
+      el("div", { class: "settings-desc" }, "No notifications are sent during this window."),
+      el("div", { class: "settings-times" },
+        el("label", { class: "time-lbl" }, "From", dndStart),
+        el("label", { class: "time-lbl" }, "To", dndEnd)))));
 }

@@ -5,9 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#0b1413" />
   <title>Asclepius — Your Health Coach</title>
+  <!-- PWA: installable + push-capable -->
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  <link rel="icon" href="/icons/icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Asclepius" />
   <link rel="stylesheet" href="/styles.css" />
   <script src="/vendor/chart.umd.min.js"></script>
   <script src="/vendor/marked.min.js"></script>
+  <script src="/vendor/quagga.min.js"></script>
 </head>
 <body>
   <!-- ===================== Onboarding / upload ===================== -->
@@ -53,7 +62,10 @@
           <p class="tagline" id="topbarSub">Your health coach</p>
         </div>
       </div>
-      <button id="reloadBtn" class="ghost-btn" title="Import a new export">Import</button>
+      <div class="topbar-actions">
+        <button id="settingsBtn" class="ghost-btn icon-only" title="Notifications & settings" aria-label="Settings">⚙</button>
+        <button id="reloadBtn" class="ghost-btn" title="Import a new export">Import</button>
+      </div>
     </header>
 
     <main id="screen" class="screen"><!-- active tab renders here --></main>
