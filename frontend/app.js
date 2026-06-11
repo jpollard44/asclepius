@@ -38,7 +38,13 @@ const escapeHtml = (s) =>
 const num = (v, d = 0) => (v == null || isNaN(v) ? d : Number(v));
 const round = (v, p = 0) => { const m = 10 ** p; return Math.round(num(v) * m) / m; };
 const fmt = (v, p = 0) => round(v, p).toLocaleString();
-const todayISO = () => new Date().toISOString().slice(0, 10);
+// Local calendar date as YYYY-MM-DD. Must NOT use toISOString(), which is UTC —
+// in the evening west of UTC that rolls to tomorrow, so "Today" and the default
+// log date would point at the wrong day.
+const todayISO = () => {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+};
 
 /* ============================================================
    Imperial / US-customary units
@@ -1435,10 +1441,10 @@ async function renderSleep() {
   const s = data.summary;
   if (s.available) {
     screen.append(el("div", { class: "stat-grid" },
-      statCard("😴 Avg asleep", round(s.avg_asleep_hours, 1) + "h", "last " + s.window_days + "d", null, "", openSleepDetail),
-      statCard("📊 Consistency", "±" + round(s.consistency_std_hours, 1) + "h", "std dev", null, "", openSleepDetail),
-      statCard("🌀 REM", s.avg_rem_hours != null ? round(s.avg_rem_hours, 1) + "h" : "—", "avg", null, "", openSleepDetail),
-      statCard("💤 Deep", s.avg_deep_hours != null ? round(s.avg_deep_hours, 1) + "h" : "—", "avg", null, "", openSleepDetail)));
+      statCard("😴 Avg asleep", round(s.avg_asleep_hours, 1) + "h", "last " + s.window_days + "d", { onclick: openSleepDetail }),
+      statCard("📊 Consistency", "±" + round(s.consistency_std_hours, 1) + "h", "std dev", { onclick: openSleepDetail }),
+      statCard("🌀 REM", s.avg_rem_hours != null ? round(s.avg_rem_hours, 1) + "h" : "—", "avg", { onclick: openSleepDetail }),
+      statCard("💤 Deep", s.avg_deep_hours != null ? round(s.avg_deep_hours, 1) + "h" : "—", "avg", { onclick: openSleepDetail })));
   }
   if (data.series.length) {
     const nights = data.series.filter((n) => n.asleep_hours > 0);
