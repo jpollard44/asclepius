@@ -467,6 +467,141 @@ a { color: var(--teal); }
   color-scheme: dark;
 }
 
+/* ============================================================
+   Deep-dive detail overlay
+   ------------------------------------------------------------
+   Full-screen, slide-up drill-down for any metric. Sits above the app
+   chrome (below the bottom sheet so form sheets can stack on top of it).
+   ============================================================ */
+.detail-backdrop {
+  position: fixed; inset: 0; z-index: 45; background: rgba(0,0,0,.6);
+  display: flex; align-items: flex-end; justify-content: center;
+  animation: fade .15s ease;
+}
+.detail {
+  background: var(--bg); width: 100%; max-width: 720px;
+  height: 96%; height: 96dvh;
+  border-radius: 20px 20px 0 0; border: 1px solid var(--line); border-bottom: none;
+  display: flex; flex-direction: column; overflow: hidden;
+  animation: slideup .26s cubic-bezier(.2,.8,.2,1);
+  box-shadow: 0 -8px 40px rgba(0,0,0,.45);
+}
+/* Swiping the header down dismisses; JS sets --drag during the gesture. */
+.detail.dragging { animation: none; transition: none; }
+.detail-head {
+  flex: 0 0 auto; padding: 8px 18px 12px;
+  background: rgba(15,28,26,.92); backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line); touch-action: none; cursor: grab;
+}
+.detail-grab {
+  width: 38px; height: 4px; border-radius: 999px; background: var(--surface-2);
+  margin: 4px auto 10px;
+}
+.detail-head-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.detail-titles { min-width: 0; }
+.detail-head h2 { margin: 0; font-size: 21px; letter-spacing: -.02em; }
+.detail-sub { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+.detail-sub:empty { display: none; }
+.detail-head .icon-btn { flex: 0 0 auto; margin: -4px -6px 0 0; }
+.detail-back { font-size: 28px; line-height: 1; margin: -4px 2px 0 -8px; }
+.detail-body {
+  flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 16px 16px calc(28px + var(--safe-bottom));
+}
+@media (max-width: 400px) {
+  .detail-head { padding-left: 15px; padding-right: 15px; }
+  .detail-body { padding-left: 13px; padding-right: 13px; }
+}
+
+/* Hero block — the headline value for this metric. */
+.d-hero { text-align: center; padding: 10px 4px 16px; }
+.d-hero .d-hero-val { font-size: 44px; font-weight: 800; letter-spacing: -.03em; line-height: 1; }
+.d-hero .d-hero-val small { font-size: 18px; font-weight: 600; color: var(--muted); }
+.d-hero .d-hero-lbl { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.d-hero .d-hero-trend { font-size: 13px; font-weight: 650; margin-top: 6px; }
+
+/* Big progress ring (calories / water / protein vs goal). */
+.d-ring-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 0 14px; }
+.d-ring { position: relative; width: 168px; height: 168px; }
+.d-ring .d-ring-center { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; }
+.d-ring-num { font-size: 34px; font-weight: 800; letter-spacing: -.02em; line-height: 1; }
+.d-ring-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+/* Compact stat tiles grid inside a detail. */
+.d-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-bottom: 14px; }
+.d-stats.cols-2 { grid-template-columns: repeat(2, 1fr); }
+.d-stats.cols-4 { grid-template-columns: repeat(4, 1fr); }
+.d-stat {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 11px 10px; text-align: center;
+}
+.d-stat .v { font-size: 19px; font-weight: 750; letter-spacing: -.02em; }
+.d-stat .v small { font-size: 11px; font-weight: 500; color: var(--faint); }
+.d-stat .k { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+/* Tappable tiles (drill further — e.g. body-composition metrics). */
+.d-tap { cursor: pointer; transition: border-color .12s; }
+.d-tap:hover { border-color: var(--teal); }
+.d-tap:active { transform: scale(.985); }
+.d-tap-row { cursor: pointer; }
+.d-tap-row:hover { background: var(--surface-2); }
+.chev::after { content: "›"; color: var(--faint); font-size: 18px; margin-left: 6px; }
+
+/* Segmented period control (7 / 30 / 90 / 365 days). */
+.seg {
+  display: inline-flex; background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: 999px; padding: 3px; gap: 2px; margin: 0 auto 14px; width: fit-content;
+}
+.seg-wrap { display: flex; justify-content: center; }
+.seg button {
+  border: none; background: none; color: var(--muted); cursor: pointer;
+  padding: 7px 15px; border-radius: 999px; font-size: 13px; font-weight: 600;
+  min-height: 36px;
+}
+.seg button.active { background: var(--teal); color: #04201c; }
+
+/* Distribution / horizontal bars (macro split, top sources). */
+.distro { display: flex; flex-direction: column; gap: 11px; }
+.distro-row .distro-top { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; }
+.distro-row .distro-top .dn { font-weight: 600; }
+.distro-row .distro-top .dv { color: var(--muted); }
+.distro-bar { height: 9px; background: var(--bg-2); border-radius: 999px; overflow: hidden; }
+.distro-bar > span { display: block; height: 100%; border-radius: 999px; }
+
+/* Macro split stacked bar (P/C/F by calorie share). */
+.macro-split { display: flex; height: 14px; border-radius: 999px; overflow: hidden; margin: 4px 0 12px; background: var(--bg-2); }
+.macro-split > span { height: 100%; }
+.macro-split .ms-p { background: var(--blue); }
+.macro-split .ms-c { background: var(--amber); }
+.macro-split .ms-f { background: var(--coral); }
+.macro-legend { display: flex; justify-content: space-around; gap: 8px; font-size: 12px; }
+.macro-legend .ml { display: flex; align-items: center; gap: 6px; }
+.macro-legend .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.macro-legend .dot.p { background: var(--blue); }
+.macro-legend .dot.c { background: var(--amber); }
+.macro-legend .dot.f { background: var(--coral); }
+
+/* Sets table (strength workout detail). */
+.sets-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.sets-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); font-weight: 700; padding: 4px 8px; }
+.sets-table td { padding: 7px 8px; border-top: 1px solid var(--line); }
+.sets-table td.num { font-weight: 650; }
+.sets-table .setn { color: var(--faint); width: 28px; }
+
+/* A subtle labelled key/value line list. */
+.kv-list { display: flex; flex-direction: column; }
+.kv { display: flex; justify-content: space-between; gap: 12px; padding: 10px 2px; border-bottom: 1px solid var(--line); font-size: 14px; }
+.kv:last-child { border-bottom: none; }
+.kv .kv-k { color: var(--muted); }
+.kv .kv-v { font-weight: 650; text-align: right; }
+
+/* Make a dashboard stat feel tappable. */
+.stat.tappable { cursor: pointer; transition: border-color .12s, transform .08s; }
+.stat.tappable:hover { border-color: var(--teal); }
+.stat.tappable:active { transform: scale(.985); }
+.streak.tappable { cursor: pointer; }
+.streak.tappable:hover { outline: 1px solid var(--teal); }
+
 /* On/off switch */
 .switch { position: relative; display: inline-flex; flex: 0 0 auto; cursor: pointer; }
 .switch input { position: absolute; opacity: 0; width: 0; height: 0; }

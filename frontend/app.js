@@ -103,6 +103,7 @@ async function init() {
   setupChartDefaults();
   wireUpload();
   wireSheet();
+  wireDetail();
   wireTabs();
   wireChrome();
   wireSettings();
@@ -320,15 +321,17 @@ async function renderDashboard() {
   const grid = el("div", { class: "stat-grid" });
   grid.append(
     statCard("🔥 Calories", n.kcal ? fmt(n.kcal) : "—", n.kcal_goal ? `of ${fmt(n.kcal_goal)} kcal` : "logged today",
-      n.kcal_goal ? pct(n.kcal, n.kcal_goal) : null),
+      n.kcal_goal ? pct(n.kcal, n.kcal_goal) : null, "", openCaloriesDetail),
     statCard("💪 Protein", n.protein ? fmt(n.protein) + "g" : "—", n.protein_goal ? `of ${fmt(n.protein_goal)}g` : "today",
-      n.protein_goal ? pct(n.protein, n.protein_goal) : null, "blue"),
-    statCard("💧 Water", fmt(wTotal.value) + " fl oz", `of ${fmt(wGoal.value)} fl oz`, w.pct, "blue"),
-    statCard("👟 Steps", d.steps_today != null ? fmt(d.steps_today) : "—", "today"),
-    statCard("⚡ Active energy", d.active_energy_today != null ? fmt(d.active_energy_today) + " kcal" : "—", "today"),
-    statCard("⚖️ Weight", weight ? fmt(weight.value, 1) + " lb" : "—", d.weight ? d.weight.date : "no data"),
-    statCard("😴 Sleep", d.sleep_last ? round(d.sleep_last.asleep_hours, 1) + "h" : "—", d.sleep_last ? "last night" : "no data"),
-    statCard("🏋 Workouts", d.workouts_week, "this week"));
+      n.protein_goal ? pct(n.protein, n.protein_goal) : null, "blue", openProteinDetail),
+    statCard("💧 Water", fmt(wTotal.value) + " fl oz", `of ${fmt(wGoal.value)} fl oz`, w.pct, "blue", openWaterDetail),
+    statCard("👟 Steps", d.steps_today != null ? fmt(d.steps_today) : "—", "today", null, "",
+      () => openMetricDetail("steps", { label: "Steps", periods: [7, 30, 90, 365], default: 30 })),
+    statCard("⚡ Active energy", d.active_energy_today != null ? fmt(d.active_energy_today) + " kcal" : "—", "today", null, "",
+      () => openMetricDetail("active_energy", { label: "Active Energy", periods: [7, 30, 90, 365], default: 30 })),
+    statCard("⚖️ Weight", weight ? fmt(weight.value, 1) + " lb" : "—", d.weight ? d.weight.date : "no data", null, "", openWeightDetail),
+    statCard("😴 Sleep", d.sleep_last ? round(d.sleep_last.asleep_hours, 1) + "h" : "—", d.sleep_last ? "last night" : "no data", null, "", openSleepDetail),
+    statCard("🏋 Workouts", d.workouts_week, "this week", null, "", openWorkoutsDetail));
   screen.append(grid);
 
   // Streaks
@@ -336,9 +339,9 @@ async function renderDashboard() {
   screen.append(el("div", { class: "card" },
     el("div", { class: "card-head" }, el("h3", {}, "Streaks")),
     el("div", { class: "streaks" },
-      streakBox("🔥", s.food, "Food log"),
-      streakBox("⚡", s.workout, "Workouts"),
-      streakBox("💧", s.water, "Water goal"))));
+      streakBox("🔥", s.food, "Food log", openCaloriesDetail),
+      streakBox("⚡", s.workout, "Workouts", openWorkoutsDetail),
+      streakBox("💧", s.water, "Water goal", openWaterDetail))));
 
   // Active goals
   if (d.goals?.length) {
@@ -374,16 +377,16 @@ function qa(icon, lbl, onclick) {
   return el("div", { class: "qa", onclick },
     el("div", { class: "qa-icon" }, icon), el("div", { class: "qa-lbl" }, lbl));
 }
-function statCard(label, value, sub, pctVal, color = "") {
-  const node = el("div", { class: "stat" },
+function statCard(label, value, sub, pctVal, color = "", onclick = null) {
+  const node = el("div", { class: "stat" + (onclick ? " tappable" : ""), onclick },
     el("div", { class: "label" }, label),
     el("div", { class: "value", html: String(value) }),
     sub ? el("div", { class: "sub" }, sub) : null);
   if (pctVal != null) node.append(el("div", { class: "bar " + color }, el("span", { style: `width:${Math.min(100, pctVal)}%` })));
   return node;
 }
-function streakBox(icon, n, lbl) {
-  return el("div", { class: "streak" },
+function streakBox(icon, n, lbl, onclick) {
+  return el("div", { class: "streak" + (onclick ? " tappable" : ""), onclick },
     el("div", { class: "s-num" }, el("span", { class: "flame" }, n > 0 ? icon : "·"), " " + n),
     el("div", { class: "s-lbl" }, lbl));
 }
@@ -411,12 +414,12 @@ async function renderFood() {
   } catch (e) { screen.lastChild.replaceWith(el("div", { class: "empty" }, "⚠ " + e.message)); return; }
   screen.lastChild.remove();
 
-  // Totals card with macro split
+  // Totals card with macro split — tap to drill into calories
   const t = log.totals;
-  screen.append(el("div", { class: "card" },
+  screen.append(el("div", { class: "card d-tap", onclick: openCaloriesDetail },
     el("div", { class: "ring-wrap" },
       el("div", {}, el("div", { class: "value", style: "font-size:30px;font-weight:800" }, fmt(t.kcal)),
-        el("div", { class: "muted", style: "font-size:13px" }, "calories today")),
+        el("div", { class: "muted", style: "font-size:13px" }, "calories today ›")),
       el("div", { class: "grow macros" },
         macroBox("p", "Protein", t.protein),
         macroBox("c", "Carbs", t.carbs),
@@ -457,12 +460,12 @@ function macroBox(cls, lbl, val) {
     el("div", { class: "m-val" }, fmt(val) + "g"), el("div", { class: "m-lbl" }, lbl));
 }
 function foodEntryRow(e) {
-  return el("div", { class: "lrow" },
+  return el("div", { class: "lrow d-tap-row", onclick: () => openFoodEntryDetail(e) },
     el("div", { class: "l-main" },
       el("div", { class: "l-title" }, e.name + (e.qty !== 1 ? ` ×${round(e.qty, 2)}` : "")),
       el("div", { class: "l-sub" }, `${fmt(e.protein)}P · ${fmt(e.carbs)}C · ${fmt(e.fat)}F`)),
     el("div", { class: "l-val" }, fmt(e.kcal), el("small", {}, " kcal")),
-    el("button", { class: "del", onclick: async () => { await jdel("/api/food/" + e.id); switchTab("food"); } }, "✕"));
+    el("button", { class: "del", onclick: async (ev) => { ev.stopPropagation(); await jdel("/api/food/" + e.id); switchTab("food"); } }, "✕"));
 }
 function dateLabel(iso) {
   if (iso === todayISO()) return "Today";
@@ -803,9 +806,9 @@ async function renderWorkouts() {
     const card = el("div", { class: "card" }, el("div", { class: "card-head" }, el("h3", {}, "Personal records")));
     const list = el("div", { class: "list" });
     prs.records.slice(0, 8).forEach((r) => list.append(
-      el("div", { class: "lrow" },
+      el("div", { class: "lrow d-tap-row", onclick: () => openExerciseDetail(r.name) },
         el("div", { class: "l-icon" }, "📈"),
-        el("div", { class: "l-main" }, el("div", { class: "l-title" }, r.name),
+        el("div", { class: "l-main" }, el("div", { class: "l-title chev" }, r.name),
           el("div", { class: "l-sub" }, `est. 1RM ${fmt(disp(r.e1rm, "kg").value, 1)} lb · ${r.date}`)),
         el("div", { class: "l-val" }, fmt(disp(r.weight, "kg").value, 1), el("small", {}, " lb ×" + fmt(r.reps))))));
     card.append(list); screen.append(card);
@@ -824,13 +827,13 @@ function workoutRow(w) {
   if (w.distance_km) bits.push(round(disp(w.distance_km, "km").value, 1) + " mi");
   if (w.energy_kcal) bits.push(round(w.energy_kcal) + " kcal");
   if (w.exercises?.length) bits.push(w.exercises.length + " exercises");
-  const row = el("div", { class: "lrow" },
+  const row = el("div", { class: "lrow d-tap-row", onclick: () => openWorkoutDetail(w) },
     el("div", { class: "l-icon" }, WORKOUT_ICONS[w.type] || "🤸"),
     el("div", { class: "l-main" },
       el("div", { class: "l-title" }, w.activity, " ", el("span", { class: "tag " + w.type }, w.type)),
       el("div", { class: "l-sub" }, `${w.date}${bits.length ? " · " + bits.join(" · ") : ""}`)),
     w.source === "manual"
-      ? el("button", { class: "del", onclick: async () => { await jdel("/api/workouts/" + w.id); switchTab("workouts"); } }, "✕")
+      ? el("button", { class: "del", onclick: async (ev) => { ev.stopPropagation(); await jdel("/api/workouts/" + w.id); switchTab("workouts"); } }, "✕")
       : el("span", { class: "tag" }, "Apple"));
   return row;
 }
@@ -948,12 +951,20 @@ async function renderBody() {
     "metabolic_age", "waist", "chest", "hips", "arm", "thigh",
     "resting_heart_rate", "bp_systolic", "bp_diastolic"];
   data.metrics.sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
+  // Lower-is-better metrics: a downward trend reads as good (green) in detail.
+  const INVERT_METRICS = new Set(["body_fat", "fat_content", "visceral_fat",
+    "subcutaneous_fat", "metabolic_age", "waist", "hips",
+    "bp_systolic", "bp_diastolic", "resting_heart_rate"]);
   data.metrics.forEach((m) => {
     const s = m.summary;
     const u = dispUnit(m.unit);
     const { card, canvas } = chartCard("");
+    card.classList.add("d-tap");
+    card.addEventListener("click", () => openMetricDetail(m.key, {
+      label: m.label, unit: m.unit, area: m.area, invert: INVERT_METRICS.has(m.key),
+    }));
     card.prepend(el("div", { class: "card-head" },
-      el("h3", {}, m.label),
+      el("h3", { class: "chev" }, m.label),
       el("div", {}, el("span", { class: "value", style: "font-size:18px" }, fmt(disp(s.latest, m.unit).value, 1)),
         el("span", { class: "muted", style: "font-size:12px" }, " " + u + trendArrow(s.trend)))));
     screen.append(card);
@@ -1025,10 +1036,10 @@ async function renderSleep() {
   const s = data.summary;
   if (s.available) {
     screen.append(el("div", { class: "stat-grid" },
-      statCard("😴 Avg asleep", round(s.avg_asleep_hours, 1) + "h", "last " + s.window_days + "d"),
-      statCard("📊 Consistency", "±" + round(s.consistency_std_hours, 1) + "h", "std dev"),
-      statCard("🌀 REM", s.avg_rem_hours != null ? round(s.avg_rem_hours, 1) + "h" : "—", "avg"),
-      statCard("💤 Deep", s.avg_deep_hours != null ? round(s.avg_deep_hours, 1) + "h" : "—", "avg")));
+      statCard("😴 Avg asleep", round(s.avg_asleep_hours, 1) + "h", "last " + s.window_days + "d", null, "", openSleepDetail),
+      statCard("📊 Consistency", "±" + round(s.consistency_std_hours, 1) + "h", "std dev", null, "", openSleepDetail),
+      statCard("🌀 REM", s.avg_rem_hours != null ? round(s.avg_rem_hours, 1) + "h" : "—", "avg", null, "", openSleepDetail),
+      statCard("💤 Deep", s.avg_deep_hours != null ? round(s.avg_deep_hours, 1) + "h" : "—", "avg", null, "", openSleepDetail)));
   }
   if (data.series.length) {
     const nights = data.series.filter((n) => n.asleep_hours > 0);
@@ -1315,6 +1326,672 @@ async function recommend(topic, label) {
     chatHistory.push({ role: "assistant", content: data.reply });
   } catch (e) { pending.className = "msg assistant error"; pending.textContent = "⚠ " + e.message; chatHistory.pop(); }
   finally { chatBusy = false; scrollChat(); }
+}
+
+/* ============================================================
+   DEEP-DIVE DETAIL VIEWS
+   ------------------------------------------------------------
+   A single full-screen, slide-up overlay (#detail) that any tappable card
+   or event drills into. openDetail() pushes a {title, sub, build} frame onto
+   a small stack so nested drill-downs (weight → body-fat, workout → exercise
+   history) get an intuitive back button; the X dismisses the whole thing, as
+   does a swipe down on the header. Charts created inside live in their own
+   registry so closing a detail never touches the tab's charts.
+   ============================================================ */
+const detailCharts = {};
+let detailStack = [];
+
+function makeDetailChart(canvas, config) {
+  if (!window.Chart || !canvas) return;
+  const c = new Chart(canvas, config);
+  detailCharts[canvas.id || ("dc" + Math.random())] = c;
+  return c;
+}
+function destroyDetailCharts() {
+  for (const k of Object.keys(detailCharts)) { detailCharts[k].destroy(); delete detailCharts[k]; }
+}
+
+function wireDetail() {
+  $("#detailClose").addEventListener("click", closeDetail);
+  $("#detailBack").addEventListener("click", detailBack);
+  $("#detail").addEventListener("click", (e) => { if (e.target.id === "detail") closeDetail(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("#detail").classList.contains("hidden")) detailBack();
+  });
+  // Swipe the header down to dismiss.
+  const head = $("#detailHead");
+  const panel = () => $("#detail .detail");
+  let startY = null, dy = 0, dragging = false;
+  head.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".icon-btn")) return;     // let buttons work
+    startY = e.clientY; dy = 0; dragging = true;
+    panel().classList.add("dragging");
+    try { head.setPointerCapture(e.pointerId); } catch {}
+  });
+  head.addEventListener("pointermove", (e) => {
+    if (!dragging || startY == null) return;
+    dy = Math.max(0, e.clientY - startY);
+    panel().style.transform = `translateY(${dy}px)`;
+  });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    const p = panel(); p.classList.remove("dragging"); p.style.transform = "";
+    if (dy > 110) closeDetail();
+    startY = null; dy = 0;
+  };
+  head.addEventListener("pointerup", end);
+  head.addEventListener("pointercancel", end);
+}
+function resetDetailDrag() { const p = $("#detail .detail"); if (p) p.style.transform = ""; }
+
+// Push a frame and render it. `build(body)` clears #detailBody and fills it.
+function openDetail(title, sub, build) {
+  detailStack.push({ title, sub, build });
+  showDetailTop();
+}
+function showDetailTop() {
+  destroyDetailCharts();
+  const top = detailStack[detailStack.length - 1];
+  if (!top) return;
+  $("#detailTitle").textContent = top.title;
+  $("#detailSub").textContent = top.sub || "";
+  $("#detailBack").classList.toggle("hidden", detailStack.length <= 1);
+  const body = $("#detailBody");
+  body.innerHTML = ""; body.append(loading());
+  $("#detail").classList.remove("hidden");
+  resetDetailDrag(); body.scrollTop = 0;
+  Promise.resolve().then(() => top.build(body)).catch((e) => {
+    body.innerHTML = ""; body.append(el("div", { class: "empty" }, "⚠ " + (e.message || e)));
+  });
+}
+function refreshDetail() { showDetailTop(); }              // re-run current frame
+function detailBack() { if (detailStack.length > 1) { detailStack.pop(); showDetailTop(); } else closeDetail(); }
+function closeDetail() { detailStack = []; destroyDetailCharts(); $("#detail").classList.add("hidden"); }
+
+/* ---- detail building blocks ---- */
+function dHero(value, unit, label, trend, invert) {
+  return el("div", { class: "d-hero" },
+    el("div", { class: "d-hero-val", html: String(value) + (unit ? ` <small>${escapeHtml(unit)}</small>` : "") }),
+    label ? el("div", { class: "d-hero-lbl" }, label) : null,
+    trend ? trendBadge(trend, invert, "d-hero-trend") : null);
+}
+function trendBadge(trend, invert, cls = "") {
+  if (!trend) return null;
+  const dir = trend.direction;
+  const arrow = dir === "up" ? "▲" : dir === "down" ? "▼" : "→";
+  const good = invert ? dir === "down" : dir === "up";
+  const tone = dir === "flat" ? "flat" : good ? "up" : "down";
+  return el("div", { class: `delta ${tone} ${cls}` }, `${arrow} ${trend.pct_change > 0 ? "+" : ""}${trend.pct_change}%`);
+}
+function dStat(value, unit, label, tap) {
+  return el("div", { class: "d-stat" + (tap ? " d-tap" : ""), onclick: tap || null },
+    el("div", { class: "v", html: String(value) + (unit ? ` <small>${escapeHtml(unit)}</small>` : "") }),
+    el("div", { class: "k" }, label));
+}
+function dStatsGrid(cols, ...stats) {
+  const cls = cols === 2 ? " cols-2" : cols === 4 ? " cols-4" : "";
+  return el("div", { class: "d-stats" + cls }, ...stats.filter(Boolean));
+}
+function dCard(title, ...kids) {
+  return el("div", { class: "card" },
+    title ? el("div", { class: "card-head" }, el("h3", {}, title)) : null, ...kids.filter(Boolean));
+}
+function dSection(t) { return el("div", { class: "section-title" }, t); }
+function kvRow(k, v) { return el("div", { class: "kv" }, el("span", { class: "kv-k" }, k), el("span", { class: "kv-v", html: String(v) })); }
+
+// SVG progress ring with a value in the middle.
+function dRing(pctVal, color, centerTop, centerSub) {
+  const r = 72, circ = 2 * Math.PI * r;
+  const p = Math.min(100, Math.max(0, pctVal || 0));
+  const off = circ * (1 - p / 100);
+  const svg =
+    `<svg viewBox="0 0 168 168" width="168" height="168" aria-hidden="true">
+       <circle cx="84" cy="84" r="${r}" fill="none" stroke="#1a2b28" stroke-width="14"/>
+       <circle cx="84" cy="84" r="${r}" fill="none" stroke="${color}" stroke-width="14"
+         stroke-linecap="round" stroke-dasharray="${circ}" stroke-dashoffset="${off}"
+         transform="rotate(-90 84 84)"/>
+     </svg>`;
+  return el("div", { class: "d-ring-wrap" },
+    el("div", { class: "d-ring", html: svg },
+      el("div", { class: "d-ring-center" },
+        el("div", { class: "d-ring-num" }, centerTop),
+        centerSub ? el("div", { class: "d-ring-sub" }, centerSub) : null)));
+}
+
+// Stacked P/C/F split by calorie share, with a legend.
+function macroSplit(p, c, f) {
+  const pc = num(p) * 4, cc = num(c) * 4, fc = num(f) * 9, tot = pc + cc + fc || 1;
+  const w = (x) => round(x / tot * 100);
+  const leg = (cls, label, val) => el("div", { class: "ml" }, el("span", { class: "dot " + cls }), el("span", {}, `${label} ${val}%`));
+  return el("div", {},
+    el("div", { class: "macro-split" },
+      el("span", { class: "ms-p", style: `width:${w(pc)}%` }),
+      el("span", { class: "ms-c", style: `width:${w(cc)}%` }),
+      el("span", { class: "ms-f", style: `width:${w(fc)}%` })),
+    el("div", { class: "macro-legend" }, leg("p", "Protein", w(pc)), leg("c", "Carbs", w(cc)), leg("f", "Fat", w(fc))));
+}
+// Horizontal labelled bars (top sources, sleep stages).
+function distroRows(items, color = TEAL) {
+  const max = Math.max(...items.map((i) => i.value), 1);
+  const wrap = el("div", { class: "distro" });
+  items.forEach((i) => wrap.append(el("div", { class: "distro-row" + (i.tap ? " d-tap-row" : ""), onclick: i.tap || null },
+    el("div", { class: "distro-top" }, el("span", { class: "dn" }, i.name), el("span", { class: "dv" }, i.display)),
+    el("div", { class: "distro-bar" }, el("span", { style: `width:${round(i.value / max * 100)}%;background:${i.color || color}` })))));
+  return wrap;
+}
+function periodControl(options, current, onChange) {
+  const seg = el("div", { class: "seg" });
+  options.forEach((d) => seg.append(el("button", { class: d === current ? "active" : "", onclick: () => onChange(d) }, labelForDays(d))));
+  return el("div", { class: "seg-wrap" }, seg);
+}
+function labelForDays(d) { return d === 7 ? "7d" : d === 30 ? "30d" : d === 90 ? "90d" : d === 365 ? "1y" : d + "d"; }
+function detailChart(parent, title, config, height = "") {
+  const { card, canvas } = chartCard(title, height);
+  parent.append(card);
+  makeDetailChart(canvas, config);
+  return card;
+}
+function prettyUnit(unit) { return (!unit || unit === "count") ? "" : dispUnit(unit); }
+function dpFor(unit) { const c = UNIT_CONV[unit]; if (c) return c.dp; return unit === "%" ? 1 : 0; }
+function filterDays(series, days) {
+  const c = new Date(); c.setDate(c.getDate() - days);
+  const iso = c.toISOString().slice(0, 10);
+  return series.filter((r) => r.date >= iso);
+}
+function seriesStats(vals) {
+  if (!vals.length) return null;
+  const sum = vals.reduce((a, b) => a + b, 0), avg = sum / vals.length;
+  const sd = Math.sqrt(vals.reduce((a, b) => a + (b - avg) ** 2, 0) / vals.length);
+  return { avg, min: Math.min(...vals), max: Math.max(...vals), sd, sum,
+    first: vals[0], last: vals[vals.length - 1], n: vals.length };
+}
+const goalLineDataset = (label, value, len, color = AMBER) => ({
+  label, data: Array(len).fill(value), borderColor: color, borderDash: [5, 4],
+  borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0,
+});
+function timeOf(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+// Period control + stats + line chart for one continuous metric series.
+function metricWindowBlock(host, series, unit, label, color, periods = [30, 90, 365], dflt = 90) {
+  let cur = periods.includes(dflt) ? dflt : periods[periods.length - 1];
+  const render = () => {
+    destroyDetailCharts(); host.innerHTML = "";
+    host.append(periodControl(periods, cur, (x) => { cur = x; render(); }));
+    const s = filterDays(series, cur);
+    const vals = s.map((r) => disp(r.value, unit).value);
+    const st = seriesStats(vals);
+    if (!st) { host.append(el("div", { class: "empty" }, "No data in this window.")); return; }
+    const chg = st.last - st.first, dp = dpFor(unit);
+    host.append(dStatsGrid(4,
+      dStat(fmt(st.avg, dp), prettyUnit(unit), "Average"),
+      dStat(fmt(st.min, dp), "", "Min"),
+      dStat(fmt(st.max, dp), "", "Max"),
+      dStat((chg >= 0 ? "+" : "") + fmt(chg, dp), "", "Change")));
+    detailChart(host, `${label} — ${labelForDays(cur)}`, {
+      type: "line",
+      data: { labels: s.map((r) => r.date.slice(5)), datasets: [lineDataset(label, vals, color)] },
+      options: { scales: AXES, plugins: { legend: { display: false } } },
+    });
+  };
+  render();
+}
+
+/* ---- generic metric detail (weight, steps, energy, body composition…) ---- */
+async function openMetricDetail(key, opts = {}) {
+  openDetail(opts.label || key, opts.sub || "", async (body) => {
+    const data = await api(`/api/metric/${key}?days=365`);
+    const series = data.series || [];
+    body.innerHTML = "";
+    if (!series.length) { body.append(el("div", { class: "empty" }, "No data recorded yet.")); return; }
+    const unit = series[series.length - 1].unit || opts.unit || "";
+    const latest = series[series.length - 1];
+    const dl = disp(latest.value, unit);
+    body.append(dHero(fmt(dl.value, dpFor(unit)), prettyUnit(unit), `latest · ${latest.date}`, data.summary?.trend, opts.invert));
+    const host = el("div", {}); body.append(host);
+    metricWindowBlock(host, series, unit, opts.label || key,
+      opts.color || (opts.area === "heart" ? CORAL : TEAL),
+      opts.periods || [30, 90, 365], opts.default || 90);
+  });
+}
+
+/* ---- Calories ---- */
+async function openCaloriesDetail() {
+  openDetail("Calories", "Energy intake", async (body) => {
+    const d = await api("/api/nutrition/detail?days=90");
+    const t = d.today, goal = t.kcal_goal, consumed = num(t.kcal);
+    body.innerHTML = "";
+    if (goal) {
+      const p = pct(consumed, goal);
+      body.append(dRing(p, p > 100 ? CORAL : TEAL, fmt(consumed), `of ${fmt(goal)} kcal`));
+      body.append(el("div", { class: "d-hero-lbl", style: "text-align:center;margin:-4px 0 16px" },
+        consumed <= goal ? `${fmt(goal - consumed)} kcal remaining` : `${fmt(consumed - goal)} kcal over goal`));
+    } else {
+      body.append(dHero(fmt(consumed), "kcal", "logged today", d.trend));
+    }
+    // Today's macro split
+    body.append(dCard("Today's macros",
+      macroSplit(t.protein, t.carbs, t.fat),
+      dStatsGrid(3, dStat(fmt(t.protein), "g", "Protein"), dStat(fmt(t.carbs), "g", "Carbs"), dStat(fmt(t.fat), "g", "Fat"))));
+    // Meal-by-meal (today)
+    const mealCard = dCard("By meal");
+    State.config.meals.forEach((m) => {
+      const mm = d.by_meal[m];
+      mealCard.append(el("div", { class: "lrow d-tap-row", onclick: () => { State.foodDate = todayISO(); closeDetail(); switchTab("food"); } },
+        el("div", { class: "l-icon" }, MEAL_ICONS[m] || "🍽"),
+        el("div", { class: "l-main" },
+          el("div", { class: "l-title", style: "text-transform:capitalize" }, m),
+          el("div", { class: "l-sub" }, mm ? `${fmt(mm.protein)}P · ${fmt(mm.carbs)}C · ${fmt(mm.fat)}F · ${mm.items} item${mm.items === 1 ? "" : "s"}` : "Nothing logged")),
+        el("div", { class: "l-val" }, mm ? fmt(mm.kcal) : "0", el("small", {}, " kcal"))));
+    });
+    body.append(mealCard);
+    // Trend with period toggle
+    if (d.available) {
+      const host = el("div", {}); body.append(host);
+      let cur = 30;
+      const render = () => {
+        destroyDetailCharts(); host.innerHTML = "";
+        host.append(periodControl([7, 30, 90], cur, (x) => { cur = x; render(); }));
+        const s = filterDays(d.series, cur), kc = s.map((r) => num(r.kcal));
+        const st = seriesStats(kc);
+        host.append(dStatsGrid(3,
+          dStat(st ? fmt(st.avg) : "—", "kcal", "Daily avg"),
+          dStat(st ? fmt(st.min) : "—", "", "Lowest"),
+          dStat(st ? fmt(st.max) : "—", "", "Highest")));
+        const ds = [lineDataset("kcal", kc, TEAL)];
+        if (goal) ds.push(goalLineDataset("goal", goal, s.length, AMBER));
+        detailChart(host, `Calories — ${labelForDays(cur)}${goal ? " (— goal)" : ""}`, {
+          type: "line", data: { labels: s.map((r) => r.date.slice(5)), datasets: ds },
+          options: { scales: { ...AXES, y: { ...AXES.y, beginAtZero: true } }, plugins: { legend: { display: false } } },
+        });
+      };
+      render();
+    } else {
+      body.append(el("div", { class: "empty" }, "Log meals to see your calorie trend."));
+    }
+  });
+}
+
+/* ---- Protein ---- */
+async function openProteinDetail() {
+  openDetail("Protein", "Daily intake & sources", async (body) => {
+    const d = await api("/api/nutrition/detail?days=90");
+    const t = d.today, goal = t.protein_goal, consumed = num(t.protein);
+    body.innerHTML = "";
+    if (goal) {
+      const p = pct(consumed, goal);
+      body.append(dRing(p, BLUE, fmt(consumed), `of ${fmt(goal)} g`));
+      body.append(el("div", { class: "d-hero-lbl", style: "text-align:center;margin:-4px 0 16px" },
+        consumed < goal ? `${fmt(goal - consumed)} g to go` : `Goal hit — ${fmt(consumed - goal)} g over`));
+    } else {
+      body.append(dHero(fmt(consumed), "g", "logged today", d.protein_trend));
+    }
+    // By meal
+    const mealCard = dCard("Protein by meal");
+    State.config.meals.forEach((m) => {
+      const mm = d.by_meal[m];
+      mealCard.append(el("div", { class: "lrow" },
+        el("div", { class: "l-icon" }, MEAL_ICONS[m] || "🍽"),
+        el("div", { class: "l-main" }, el("div", { class: "l-title", style: "text-transform:capitalize" }, m)),
+        el("div", { class: "l-val" }, mm ? fmt(mm.protein) : "0", el("small", {}, " g"))));
+    });
+    body.append(mealCard);
+    // Top protein sources
+    if (d.sources_by_protein?.length) {
+      const items = d.sources_by_protein.filter((s) => s.protein > 0).map((s) => ({
+        name: s.name, value: s.protein, display: `${fmt(s.protein)} g · ${s.times}×`, color: BLUE,
+      }));
+      if (items.length) body.append(dCard("Top sources (90d)", distroRows(items, BLUE)));
+    }
+    // Trend
+    if (d.available) {
+      const host = el("div", {}); body.append(host);
+      let cur = 30;
+      const render = () => {
+        destroyDetailCharts(); host.innerHTML = "";
+        host.append(periodControl([7, 30, 90], cur, (x) => { cur = x; render(); }));
+        const s = filterDays(d.series, cur), pr = s.map((r) => num(r.protein));
+        const st = seriesStats(pr);
+        host.append(dStatsGrid(3,
+          dStat(st ? fmt(st.avg) : "—", "g", "Daily avg"),
+          dStat(st ? fmt(st.min) : "—", "", "Lowest"),
+          dStat(st ? fmt(st.max) : "—", "", "Highest")));
+        const ds = [lineDataset("protein", pr, BLUE)];
+        if (goal) ds.push(goalLineDataset("goal", goal, s.length, AMBER));
+        detailChart(host, `Protein — ${labelForDays(cur)}${goal ? " (— goal)" : ""}`, {
+          type: "line", data: { labels: s.map((r) => r.date.slice(5)), datasets: ds },
+          options: { scales: { ...AXES, y: { ...AXES.y, beginAtZero: true } }, plugins: { legend: { display: false } } },
+        });
+      };
+      render();
+    }
+  });
+}
+
+/* ---- Water ---- */
+async function openWaterDetail() {
+  openDetail("Water", "Hydration", async (body) => {
+    const [today, ser] = await Promise.all([
+      api("/api/water?date=" + todayISO()), api("/api/water/series?days=30"),
+    ]);
+    body.innerHTML = "";
+    const goalMl = today.goal_ml, totMl = today.total_ml;
+    const g = disp(goalMl, "ml"), tt = disp(totMl, "ml");
+    const p = goalMl ? round(totMl / goalMl * 100) : 0;
+    body.append(dRing(p, BLUE, fmt(tt.value), `of ${fmt(g.value)} fl oz`));
+    body.append(el("div", { class: "d-hero-lbl", style: "text-align:center;margin:-4px 0 16px" },
+      totMl < goalMl ? `${fmt(disp(goalMl - totMl, "ml").value)} fl oz to go` : "Goal reached 🎉"));
+    // Today's entries with timestamps
+    const card = dCard("Today's intake");
+    if (today.entries.length) {
+      today.entries.forEach((e) => {
+        const oz = disp(e.amount_ml, "ml");
+        card.append(el("div", { class: "lrow" },
+          el("div", { class: "l-icon" }, "💧"),
+          el("div", { class: "l-main" },
+            el("div", { class: "l-title" }, fmt(oz.value) + " fl oz"),
+            el("div", { class: "l-sub" }, timeOf(e.created_at))),
+          el("button", { class: "del", onclick: async () => {
+            await jdel("/api/water/" + e.id); refreshDetail();
+            if (State.tab === "dashboard") switchTab("dashboard");
+          } }, "✕")));
+      });
+    } else card.append(el("div", { class: "empty" }, "No water logged yet today."));
+    card.append(el("button", { class: "btn full", style: "margin-top:10px", onclick: () => quickWater() }, "+ Add water"));
+    body.append(card);
+    // Trend + stats
+    const series = ser.series || [];
+    if (series.length) {
+      const oz = series.map((r) => disp(r.total_ml, "ml").value);
+      const st = seriesStats(oz);
+      const hitDays = series.filter((r) => r.total_ml >= goalMl).length;
+      body.append(dStatsGrid(3,
+        dStat(fmt(st.avg), "oz", "Avg / day"),
+        dStat(fmt(st.max), "oz", "Best day"),
+        dStat(hitDays, "", "Goal days")));
+      const ds = [lineDataset("fl oz", oz, BLUE)];
+      ds.push(goalLineDataset("goal", g.value, series.length, AMBER));
+      detailChart(body, "Water — last 30 days (— goal)", {
+        type: "line", data: { labels: series.map((r) => r.date.slice(5)), datasets: ds },
+        options: { scales: { ...AXES, y: { ...AXES.y, beginAtZero: true } }, plugins: { legend: { display: false } } },
+      });
+    }
+  });
+}
+
+/* ---- Weight & body composition ---- */
+async function openWeightDetail() {
+  openDetail("Weight", "Body composition", async (body) => {
+    const [w, comp] = await Promise.all([
+      api("/api/metric/body_mass?days=365"), api("/api/body?days=365"),
+    ]);
+    const series = w.series || [];
+    body.innerHTML = "";
+    if (!series.length) {
+      body.append(el("div", { class: "empty" }, "No weight data yet. Log one on the Body tab."));
+      body.append(el("button", { class: "btn secondary full", onclick: () => { closeDetail(); switchTab("body"); } }, "Go to Body"));
+      return;
+    }
+    const latest = series[series.length - 1];
+    body.append(dHero(fmt(disp(latest.value, "kg").value, 1), "lb", `latest · ${latest.date}`, w.summary?.trend, true));
+    // Composition tiles (each drills into its own metric)
+    const comps = comp.metrics || [];
+    const find = (k) => comps.find((m) => m.key === k);
+    const tiles = [];
+    const bmi = find("bmi");
+    if (bmi) tiles.push(dStat(fmt(bmi.summary.latest, 1), "", "BMI", () => openMetricDetail("bmi", { label: "BMI", unit: "" })));
+    const bf = find("body_fat");
+    if (bf) tiles.push(dStat(fmt(bf.summary.latest, 1), "%", "Body fat", () => openMetricDetail("body_fat", { label: "Body Fat", invert: true })));
+    const lbm = find("lean_body_mass");
+    if (lbm) tiles.push(dStat(fmt(disp(lbm.summary.latest, "kg").value, 1), "lb", "Lean mass", () => openMetricDetail("lean_body_mass", { label: "Lean Body Mass" })));
+    const mm = find("muscle_mass");
+    if (mm) tiles.push(dStat(fmt(disp(mm.summary.latest, "kg").value, 1), "lb", "Muscle", () => openMetricDetail("muscle_mass", { label: "Muscle Mass" })));
+    if (tiles.length) {
+      body.append(dSection("Composition"));
+      body.append(dStatsGrid(tiles.length === 2 ? 2 : tiles.length === 4 ? 2 : 3, ...tiles));
+    }
+    // Weight trend
+    const host = el("div", {}); body.append(host);
+    metricWindowBlock(host, series, "kg", "Weight", TEAL, [30, 90, 365], 90);
+    // Jump to all body metrics
+    if (comps.length > tiles.length) {
+      body.append(el("button", { class: "btn secondary full", style: "margin-top:4px", onclick: () => { closeDetail(); switchTab("body"); } }, "View all body metrics"));
+    }
+  });
+}
+
+/* ---- Sleep ---- */
+async function openSleepDetail() {
+  openDetail("Sleep", "Last 60 nights", async (body) => {
+    const data = await api("/api/sleep?days=60");
+    const s = data.summary || {};
+    const series = (data.series || []).filter((n) => n.asleep_hours > 0);
+    body.innerHTML = "";
+    if (!series.length) { body.append(el("div", { class: "empty" }, "No sleep data yet. Log a night or import Apple Health.")); return; }
+    const last = series[series.length - 1];
+    body.append(dHero(round(last.asleep_hours, 1), "h asleep", `night of ${last.date}`, s.trend));
+    // Last night
+    const eff = last.in_bed_hours ? round(last.asleep_hours / last.in_bed_hours * 100) : null;
+    const stagesCard = dCard("Last night",
+      dStatsGrid(3,
+        dStat(round(last.asleep_hours, 1), "h", "Asleep"),
+        last.in_bed_hours ? dStat(round(last.in_bed_hours, 1), "h", "In bed") : null,
+        eff != null ? dStat(eff, "%", "Efficiency") : null));
+    const stageItems = [["Deep", "deep_hours", VIOLET], ["Core", "core_hours", BLUE], ["REM", "rem_hours", TEAL], ["Awake", "awake_hours", "#3a4f4a"]]
+      .filter(([, k]) => last[k] > 0).map(([l, k, c]) => ({ name: l, value: last[k], display: round(last[k], 1) + "h", color: c }));
+    if (stageItems.length) stagesCard.append(el("div", { style: "margin-top:12px" }, distroRows(stageItems)));
+    body.append(stagesCard);
+    // Averages
+    body.append(dStatsGrid(4,
+      dStat(round(s.avg_asleep_hours, 1), "h", "Avg asleep"),
+      dStat("±" + round(s.consistency_std_hours, 1), "h", "Consistency"),
+      dStat(s.avg_rem_hours != null ? round(s.avg_rem_hours, 1) : "—", "h", "Avg REM"),
+      dStat(s.avg_deep_hours != null ? round(s.avg_deep_hours, 1) : "—", "h", "Avg deep")));
+    body.append(dStatsGrid(3,
+      dStat(round(s.min_asleep_hours, 1), "h", "Shortest"),
+      dStat(round(s.max_asleep_hours, 1), "h", "Longest"),
+      dStat(s.nights_recorded, "", "Nights")));
+    // Stacked stages
+    const stk = (label, key, color) => ({ label, data: series.map((n) => round(n[key], 2)), backgroundColor: color, borderRadius: 3, stack: "s" });
+    detailChart(body, "Sleep stages — nightly hours", {
+      type: "bar",
+      data: { labels: series.map((n) => n.date.slice(5)),
+        datasets: [stk("Deep", "deep_hours", VIOLET), stk("Core", "core_hours", BLUE), stk("REM", "rem_hours", TEAL), stk("Awake", "awake_hours", "#3a4f4a")] },
+      options: { plugins: { legend: { display: true, position: "bottom", labels: { boxWidth: 10 } } },
+        scales: { x: AXES.x, y: { ...AXES.y, beginAtZero: true, stacked: true } } },
+    }, "tall");
+  });
+}
+
+/* ---- Training overview (dashboard Workouts card) ---- */
+async function openWorkoutsDetail() {
+  openDetail("Training", "Workouts & volume", async (body) => {
+    const [data, vol] = await Promise.all([
+      api("/api/workouts?days=120"), api("/api/workouts/volume?days=90"),
+    ]);
+    const sum = data.summary || {};
+    body.innerHTML = "";
+    body.append(dStatsGrid(3,
+      dStat(sum.total_workouts ?? 0, "", "Last 30d"),
+      dStat(vol.sessions ?? 0, "", "Lift sessions"),
+      dStat(fmt(disp(vol.total_volume, "kg").value), "lb", "Volume 90d")));
+    // By activity
+    if (sum.by_activity?.length) {
+      const card = dCard("By activity");
+      sum.by_activity.forEach((a) => {
+        const bits = [
+          a.total_min ? round(a.total_min) + " min" : null,
+          a.total_km ? round(disp(a.total_km, "km").value, 1) + " mi" : null,
+          a.total_kcal ? round(a.total_kcal) + " kcal" : null,
+        ].filter(Boolean);
+        card.append(el("div", { class: "lrow" },
+          el("div", { class: "l-main" },
+            el("div", { class: "l-title" }, a.activity),
+            bits.length ? el("div", { class: "l-sub" }, bits.join(" · ")) : null),
+          el("div", { class: "l-val" }, a.n, el("small", {}, " ×"))));
+      });
+      body.append(card);
+    }
+    // Volume chart
+    if (vol.series?.length) {
+      detailChart(body, "Strength volume — 90 days", {
+        type: "bar",
+        data: { labels: vol.series.map((r) => r.date.slice(5)),
+          datasets: [{ data: vol.series.map((r) => disp(r.volume, "kg").value), backgroundColor: VIOLET + "cc", borderRadius: 5 }] },
+        options: { scales: { ...AXES, y: { ...AXES.y, beginAtZero: true } }, plugins: { legend: { display: false } } },
+      });
+    }
+    // Top exercises → exercise history
+    if (vol.by_exercise?.length) {
+      const card = dCard("Top exercises");
+      vol.by_exercise.slice(0, 8).forEach((e) => card.append(el("div", { class: "lrow d-tap-row", onclick: () => openExerciseDetail(e.name) },
+        el("div", { class: "l-icon" }, "🏋"),
+        el("div", { class: "l-main" }, el("div", { class: "l-title chev" }, e.name)),
+        el("div", { class: "l-val" }, fmt(disp(e.volume, "kg").value), el("small", {}, " lb")))));
+      body.append(card);
+    }
+    // Recent workouts → single workout detail
+    if (data.workouts?.length) {
+      const card = dCard("Recent workouts");
+      data.workouts.slice(0, 15).forEach((w) => card.append(workoutDetailRow(w)));
+      body.append(card);
+    }
+  });
+}
+function workoutDetailRow(w) {
+  const bits = [];
+  if (w.duration_min) bits.push(round(w.duration_min) + " min");
+  if (w.distance_km) bits.push(round(disp(w.distance_km, "km").value, 1) + " mi");
+  if (w.energy_kcal) bits.push(round(w.energy_kcal) + " kcal");
+  if (w.exercises?.length) bits.push(w.exercises.length + " exercises");
+  return el("div", { class: "lrow d-tap-row", onclick: () => openWorkoutDetail(w) },
+    el("div", { class: "l-icon" }, WORKOUT_ICONS[w.type] || "🤸"),
+    el("div", { class: "l-main" },
+      el("div", { class: "l-title chev" }, w.activity),
+      el("div", { class: "l-sub" }, `${w.date}${bits.length ? " · " + bits.join(" · ") : ""}`)),
+    el("span", { class: "tag " + w.type }, w.type));
+}
+
+/* ---- Single workout ---- */
+function openWorkoutDetail(w) {
+  openDetail(w.activity, `${w.type} · ${w.date}`, async (body) => {
+    body.innerHTML = "";
+    // Headline metrics
+    const tiles = [];
+    if (w.duration_min) tiles.push(dStat(round(w.duration_min), "min", "Duration"));
+    if (w.distance_km) {
+      const mi = disp(w.distance_km, "km").value;
+      tiles.push(dStat(round(mi, 2), "mi", "Distance"));
+      if (w.duration_min && mi) tiles.push(dStat(paceStr(w.duration_min / mi), "/mi", "Pace"));
+    }
+    if (w.energy_kcal) tiles.push(dStat(round(w.energy_kcal), "kcal", "Energy"));
+    if (tiles.length) body.append(dStatsGrid(tiles.length % 2 === 0 ? 2 : 3, ...tiles));
+    // Strength exercises
+    if (w.exercises?.length) {
+      let totVol = 0;
+      w.exercises.forEach((ex) => (ex.sets || []).forEach((s) => { totVol += num(s.reps) * (num(s.weight) || 0); }));
+      body.append(dStatsGrid(2,
+        dStat(w.exercises.length, "", "Exercises"),
+        dStat(fmt(disp(totVol, "kg").value), "lb", "Total volume")));
+      w.exercises.forEach((ex) => {
+        const card = dCard(null);
+        card.append(el("div", { class: "card-head" },
+          el("h3", {}, ex.name || "Exercise"),
+          el("a", { class: "link text-btn", onclick: () => openExerciseDetail(ex.name) }, "History ›")));
+        const tb = el("tbody", {});
+        (ex.sets || []).forEach((s, i) => {
+          const wlb = disp(num(s.weight), "kg").value;
+          tb.append(el("tr", {},
+            el("td", { class: "setn" }, i + 1),
+            el("td", { class: "num" }, fmt(num(s.reps))),
+            el("td", { class: "num" }, num(s.weight) ? fmt(wlb, 1) + " lb" : "—"),
+            el("td", {}, num(s.weight) ? fmt(num(s.reps) * wlb) : "—")));
+        });
+        card.append(el("table", { class: "sets-table" },
+          el("thead", {}, el("tr", {}, el("th", {}, "Set"), el("th", {}, "Reps"), el("th", {}, "Weight"), el("th", {}, "Volume"))),
+          tb));
+        body.append(card);
+      });
+    }
+    if (w.notes) body.append(dCard("Notes", el("p", { class: "muted", style: "margin:0" }, w.notes)));
+    if (w.source === "manual") {
+      body.append(el("button", { class: "btn danger full", style: "margin-top:8px", onclick: async () => {
+        await jdel("/api/workouts/" + w.id); closeDetail();
+        if (State.tab === "workouts") switchTab("workouts"); toast("Workout deleted");
+      } }, "Delete workout"));
+    } else {
+      body.append(el("p", { class: "muted center", style: "font-size:13px;margin-top:12px" }, "Imported from Apple Health"));
+    }
+  });
+}
+function paceStr(minPerMi) {
+  if (!isFinite(minPerMi) || minPerMi <= 0) return "—";
+  const m = Math.floor(minPerMi), sec = Math.round((minPerMi - m) * 60);
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+/* ---- Exercise history (strength progression) ---- */
+async function openExerciseDetail(name) {
+  openDetail(name, "Exercise history", async (body) => {
+    const data = await api("/api/workouts/exercise?name=" + encodeURIComponent(name) + "&days=365");
+    const sess = data.sessions || [];
+    body.innerHTML = "";
+    if (!sess.length) { body.append(el("div", { class: "empty" }, "No history for this exercise yet.")); return; }
+    const best = sess.reduce((a, b) => (b.top_weight > a.top_weight ? b : a));
+    const bestE = sess.reduce((a, b) => (b.e1rm > a.e1rm ? b : a));
+    body.append(dStatsGrid(3,
+      dStat(fmt(disp(best.top_weight, "kg").value, 1), "lb", "Top set"),
+      dStat(fmt(disp(bestE.e1rm, "kg").value, 1), "lb", "Best e1RM"),
+      dStat(sess.length, "", "Sessions")));
+    detailChart(body, "Estimated 1RM progression", {
+      type: "line",
+      data: { labels: sess.map((s) => s.date.slice(5)), datasets: [lineDataset("e1RM", sess.map((s) => disp(s.e1rm, "kg").value), VIOLET)] },
+      options: { scales: AXES, plugins: { legend: { display: false } } },
+    });
+    detailChart(body, "Volume per session", {
+      type: "bar",
+      data: { labels: sess.map((s) => s.date.slice(5)), datasets: [{ data: sess.map((s) => disp(s.volume, "kg").value), backgroundColor: VIOLET + "cc", borderRadius: 4 }] },
+      options: { scales: { ...AXES, y: { ...AXES.y, beginAtZero: true } }, plugins: { legend: { display: false } } },
+    });
+    const card = dCard("Sessions");
+    [...sess].reverse().forEach((s) => card.append(el("div", { class: "lrow" },
+      el("div", { class: "l-main" },
+        el("div", { class: "l-title" }, s.date),
+        el("div", { class: "l-sub" }, `${s.sets} sets · top ${fmt(disp(s.top_weight, "kg").value, 1)} lb ×${s.top_reps}`)),
+      el("div", { class: "l-val" }, fmt(disp(s.volume, "kg").value), el("small", {}, " lb")))));
+    body.append(card);
+  });
+}
+
+/* ---- Food log entry ---- */
+function openFoodEntryDetail(e) {
+  openDetail(e.name, `${MEAL_ICONS[e.meal] || ""} ${e.meal} · ${e.date || State.foodDate}`, async (body) => {
+    body.innerHTML = "";
+    body.append(dHero(fmt(e.kcal), "kcal",
+      (e.qty !== 1 ? `${round(e.qty, 2)} × ` : "") + (servingUS(e.serving) || "1 serving")));
+    body.append(dCard("Macros",
+      macroSplit(e.protein, e.carbs, e.fat),
+      dStatsGrid(3, dStat(fmt(e.protein), "g", "Protein"), dStat(fmt(e.carbs), "g", "Carbs"), dStat(fmt(e.fat), "g", "Fat"))));
+    const kv = el("div", { class: "kv-list" },
+      kvRow("Calories", fmt(e.kcal) + " kcal"),
+      kvRow("Protein", `${fmt(e.protein)} g · ${round(num(e.protein) * 4)} kcal`),
+      kvRow("Carbs", `${fmt(e.carbs)} g · ${round(num(e.carbs) * 4)} kcal`),
+      kvRow("Fat", `${fmt(e.fat)} g · ${round(num(e.fat) * 9)} kcal`));
+    if (e.fiber != null) kv.append(kvRow("Fiber", fmt(e.fiber, 1) + " g"));
+    if (e.sugar != null) kv.append(kvRow("Sugar", fmt(e.sugar, 1) + " g"));
+    if (e.sodium != null) kv.append(kvRow("Sodium", fmt(e.sodium) + " mg"));
+    kv.append(kvRow("Serving", servingUS(e.serving) || "1 serving"));
+    kv.append(kvRow("Quantity", round(e.qty, 2) + "×"));
+    body.append(dCard("Nutrition", kv));
+    body.append(el("button", { class: "btn danger full", style: "margin-top:6px", onclick: async () => {
+      await jdel("/api/food/" + e.id); closeDetail(); switchTab("food"); toast("Deleted " + e.name);
+    } }, "Delete entry"));
+  });
 }
 
 /* ============================================================

@@ -295,6 +295,88 @@ def today_nutrition(db_path=None) -> dict:
     }
 
 
+def _nutrition_goals(db_path=None) -> dict:
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT category, target FROM goals WHERE status = 'active' "
+            "AND category IN ('nutrition_calories', 'nutrition_protein')").fetchall()
+    goals = {r["category"]: r["target"] for r in rows}
+    return {"kcal_goal": goals.get("nutrition_calories"),
+            "protein_goal": goals.get("nutrition_protein")}
+
+
+def nutrition_sources(days: int = 14, limit: int = 12, db_path=None) -> list[dict]:
+    """Most-logged foods over a window, with how often and their macro totals.
+
+    Powers the 'top sources' lists in the calorie/protein deep-dives — e.g.
+    where the bulk of your protein actually comes from.
+    """
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT name, COUNT(*) AS times, "
+            "ROUND(SUM(kcal)) AS kcal, ROUND(SUM(protein)) AS protein, "
+            "ROUND(SUM(carbs)) AS carbs, ROUND(SUM(fat)) AS fat "
+            "FROM food_log WHERE date >= ? "
+            "GROUP BY name COLLATE NOCASE ORDER BY times DESC, kcal DESC "
+            "LIMIT ?", (cutoff, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def nutrition_detail(days: int = 30, db_path=None) -> dict:
+    """Rich nutrition history for the calorie/protein deep-dives.
+
+    Daily series for every macro and micro we track, window averages, the
+    user's active calorie/protein goals, today's totals and a meal-by-meal
+    split, plus the foods contributing the most calories and protein.
+    """
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT date, ROUND(SUM(kcal)) AS kcal, ROUND(SUM(protein)) AS protein, "
+            "ROUND(SUM(carbs)) AS carbs, ROUND(SUM(fat)) AS fat, "
+            "ROUND(SUM(fiber), 1) AS fiber, ROUND(SUM(sugar), 1) AS sugar, "
+            "ROUND(SUM(sodium)) AS sodium, COUNT(*) AS items "
+            "FROM food_log WHERE date >= ? GROUP BY date ORDER BY date",
+            (cutoff,)).fetchall()
+        # Today's per-meal split (calories + macros per meal slot).
+        meal_rows = conn.execute(
+            "SELECT meal, ROUND(SUM(kcal)) AS kcal, ROUND(SUM(protein)) AS protein, "
+            "ROUND(SUM(carbs)) AS carbs, ROUND(SUM(fat)) AS fat, COUNT(*) AS items "
+            "FROM food_log WHERE date = ? GROUP BY meal",
+            (_today(),)).fetchall()
+    series = [dict(r) for r in rows]
+    goals = _nutrition_goals(db_path)
+    by_meal = {r["meal"]: dict(r) for r in meal_rows}
+    keys = ("kcal", "protein", "carbs", "fat", "fiber", "sugar", "sodium")
+    if not series:
+        return {"available": False, "window_days": days, "series": [],
+                "days_logged": 0, "by_meal": by_meal,
+                "today": today_nutrition(db_path), **goals,
+                "sources_by_kcal": [], "sources_by_protein": []}
+    averages = {}
+    for k in keys:
+        vals = [r[k] for r in series if r.get(k) is not None]
+        averages["avg_" + k] = round(mean(vals), 1) if vals else None
+    sources = nutrition_sources(days, db_path=db_path)
+    return {
+        "available": True,
+        "window_days": days,
+        "days_logged": len(series),
+        "series": series,
+        "by_meal": by_meal,
+        "today": today_nutrition(db_path),
+        "sources_by_kcal": sorted(sources, key=lambda s: s["kcal"] or 0,
+                                  reverse=True)[:8],
+        "sources_by_protein": sorted(sources, key=lambda s: s["protein"] or 0,
+                                     reverse=True)[:8],
+        "trend": _trend([r["kcal"] for r in series]),
+        "protein_trend": _trend([r["protein"] for r in series]),
+        **averages,
+        **goals,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Workout volume & PRs
 # ---------------------------------------------------------------------------
@@ -368,6 +450,45 @@ def personal_records(db_path=None) -> list[dict]:
                     best[name] = {"name": name, "weight": weight, "reps": reps,
                                   "e1rm": round(e1rm, 1), "date": w["date"]}
     return sorted(best.values(), key=lambda r: r["e1rm"], reverse=True)
+
+
+def exercise_history(name: str, days: int = 365, db_path=None) -> dict:
+    """Per-session history for a single strength exercise.
+
+    For each day the exercise was trained: total volume (Σ reps×weight), the
+    heaviest set and its estimated 1RM, and the set count — so the workout
+    deep-dive can chart progression and surface the all-time best.
+    """
+    target = (name or "").strip().lower()
+    workouts = _strength_workouts(days, db_path)
+    sessions: list[dict] = []
+    for w in workouts:
+        for ex in w["exercises"]:
+            if (ex.get("name") or "").strip().lower() != target:
+                continue
+            vol = 0.0
+            top_weight = 0.0
+            top_reps = 0
+            best_e1rm = 0.0
+            sets = ex.get("sets", [])
+            for s in sets:
+                reps = _num(s.get("reps"))
+                weight = _num(s.get("weight"))
+                vol += reps * weight if weight else reps
+                e1rm = weight * (1 + reps / 30.0) if reps else weight
+                if weight > top_weight or (weight == top_weight and reps > top_reps):
+                    top_weight, top_reps = weight, reps
+                best_e1rm = max(best_e1rm, e1rm)
+            sessions.append({
+                "date": w["date"],
+                "volume": round(vol),
+                "top_weight": round(top_weight, 1),
+                "top_reps": top_reps,
+                "e1rm": round(best_e1rm, 1),
+                "sets": len(sets),
+            })
+    sessions.sort(key=lambda s: s["date"])
+    return {"name": name, "sessions": sessions}
 
 
 def _num(v) -> float:

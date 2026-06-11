@@ -82,6 +82,27 @@
     </nav>
   </div>
 
+  <!-- ===================== Deep-dive detail overlay ===================== -->
+  <!-- A full-screen slide-up view for drilling into any metric. Built by
+       openDetail() in app.js; closed with the X, the backdrop, Esc, or a
+       swipe down on the header. -->
+  <div id="detail" class="detail-backdrop hidden">
+    <div class="detail" role="dialog" aria-modal="true">
+      <div class="detail-head" id="detailHead">
+        <div class="detail-grab"></div>
+        <div class="detail-head-row">
+          <button id="detailBack" class="icon-btn detail-back hidden" aria-label="Back">‹</button>
+          <div class="detail-titles">
+            <h2 id="detailTitle">—</h2>
+            <p id="detailSub" class="detail-sub"></p>
+          </div>
+          <button id="detailClose" class="icon-btn" aria-label="Close">✕</button>
+        </div>
+      </div>
+      <div id="detailBody" class="detail-body"></div>
+    </div>
+  </div>
+
   <!-- ===================== Modal / bottom sheet ===================== -->
   <div id="sheet" class="sheet-backdrop hidden">
     <div class="sheet" role="dialog" aria-modal="true">

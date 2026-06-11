@@ -385,6 +385,13 @@ def nutrition(days: int = 30) -> dict:
     return analytics.nutrition_summary(days)
 
 
+@app.get("/api/nutrition/detail")
+def nutrition_detail(days: int = 30) -> dict:
+    """Macro+micro daily series, goals, today's per-meal split, and top food
+    sources — backs the calorie and protein deep-dive views."""
+    return analytics.nutrition_detail(days)
+
+
 # ---------------------------------------------------------------------------
 # Water
 # ---------------------------------------------------------------------------
@@ -457,6 +464,13 @@ def workout_volume(days: int = 30) -> dict:
 @app.get("/api/workouts/prs")
 def personal_records() -> dict:
     return {"records": analytics.personal_records()}
+
+
+@app.get("/api/workouts/exercise")
+def exercise_history(name: str, days: int = 365) -> dict:
+    """Per-session progression for one strength exercise (volume, top set,
+    est. 1RM) — backs the exercise drill-down inside a workout's detail."""
+    return analytics.exercise_history(name, days=days)
 
 
 # ---------------------------------------------------------------------------
