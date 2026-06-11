@@ -460,13 +460,17 @@ function goalBarRow(key, value) {
   const g = State.goals[key];
   if (!g || !g.target) return null;
   const p = goalPct(key, value), tone = goalTone(key, value);
+  // Water is stored in ml but shown in fl oz; the percentage is unit-agnostic.
+  const isWater = g.unit === "ml";
   const dp = (key === "fiber" || key === "sugar") ? 1 : 0;
-  const unit = key === "calories" ? "kcal" : (g.unit || "");
+  const unit = key === "calories" ? "kcal" : (isWater ? "fl oz" : (g.unit || ""));
+  const shownVal = isWater ? disp(value, "ml").value : value;
+  const shownTgt = isWater ? disp(g.target, "ml").value : g.target;
   return el("div", { class: "tgt-row" },
     el("div", { class: "tgt-top" },
       el("span", { class: "tgt-name" }, g.label + (g.lower_better ? " (max)" : "")),
       el("span", { class: "tgt-val" + (g.lower_better && p > 100 ? " over" : "") },
-        `${fmt(value, dp)} / ${fmt(g.target)} ${unit} · ${p}%`)),
+        `${fmt(shownVal, dp)} / ${fmt(shownTgt)} ${unit} · ${p}%`)),
     el("div", { class: "bar " + tone }, el("span", { style: `width:${Math.min(100, p)}%` })));
 }
 
@@ -483,12 +487,13 @@ async function renderFood() {
       el("button", { class: "ghost-btn", onclick: () => shiftFoodDate(1) }, "›"))));
   screen.append(loading());
 
-  let log, nutrition, favs;
+  let log, nutrition, favs, water;
   try {
-    [log, nutrition, favs] = await Promise.all([
+    [log, nutrition, favs, water] = await Promise.all([
       api("/api/food?date=" + State.foodDate),
       api("/api/nutrition?days=30"),
       api("/api/favorites"),
+      api("/api/water?date=" + State.foodDate),
     ]);
   } catch (e) { screen.lastChild.replaceWith(el("div", { class: "empty" }, "⚠ " + e.message)); return; }
   screen.lastChild.remove();
@@ -498,7 +503,7 @@ async function renderFood() {
 
   // Day totals including micros (list_food totals only carry the four macros).
   const t = log.totals;
-  const tot = { kcal: t.kcal, protein: t.protein, carbs: t.carbs, fat: t.fat, fiber: 0, sugar: 0, sodium: 0 };
+  const tot = { kcal: t.kcal, protein: t.protein, carbs: t.carbs, fat: t.fat, fiber: 0, sugar: 0, sodium: 0, water: water.total_ml };
   (log.entries || []).forEach((e) => { tot.fiber += num(e.fiber); tot.sugar += num(e.sugar); tot.sodium += num(e.sodium); });
 
   // Totals card with macro split — tap to drill into calories
@@ -520,7 +525,7 @@ async function renderFood() {
       el("div", { class: "card-head" }, el("h3", {}, "Daily targets"),
         el("a", { class: "link text-btn", onclick: openSettings }, "Edit")));
     [["calories", "kcal"], ["protein", "protein"], ["carbs", "carbs"], ["fat", "fat"],
-     ["fiber", "fiber"], ["sugar", "sugar"], ["sodium", "sodium"]].forEach(([gk, vk]) => {
+     ["fiber", "fiber"], ["sugar", "sugar"], ["sodium", "sodium"], ["water", "water"]].forEach(([gk, vk]) => {
       const row = goalBarRow(gk, tot[vk]);
       if (row) card.append(row);
     });
@@ -545,6 +550,9 @@ async function renderFood() {
     screen.append(block);
   });
 
+  // Water — hydration is part of daily nutrition, so log & track it here too.
+  screen.append(waterSection(water));
+
   // Nutrition trend
   if (nutrition.available) {
     const { card, canvas } = chartCard(`Calories — last 30 days (avg ${fmt(nutrition.avg_kcal)})`);
@@ -563,6 +571,69 @@ function macroBox(cls, lbl, val, goalKey) {
     el("div", { class: "m-val" }, fmt(val) + "g"),
     el("div", { class: "m-lbl" }, lbl),
     p != null ? el("div", { class: "m-pct" }, p + "%") : null);
+}
+
+/* ---- Water section on the Food tab ---- */
+// Common pours in fluid ounces (water is stored in ml).
+const WATER_PRESETS = [["🥛 Glass", 8], ["🍶 Bottle", 16], ["🧴 Large", 24]];
+
+function waterSection(water) {
+  const goalMl = water.goal_ml, totMl = water.total_ml;
+  const tt = disp(totMl, "ml"), g = disp(goalMl, "ml");
+  const p = goalMl ? round(totMl / goalMl * 100) : 0;
+  const card = el("div", { class: "card" },
+    el("div", { class: "card-head" },
+      el("h3", {}, "💧 Water"),
+      el("a", { class: "link text-btn", onclick: openWaterDetail }, "Details ›")));
+  // Today's total + progress bar
+  card.append(el("div", { class: "water-total" },
+    `${fmt(tt.value)} / ${fmt(g.value)} fl oz · ${p}%`));
+  card.append(el("div", { class: "bar blue" },
+    el("span", { style: `width:${Math.min(100, p)}%` })));
+  // Quick-add buttons for common amounts + custom entry
+  const row = el("div", { class: "row wrap", style: "margin-top:14px" });
+  WATER_PRESETS.forEach(([lbl, oz]) =>
+    row.append(el("button", { class: "pill", onclick: () => addFoodWater(oz) }, `${lbl} · ${oz} oz`)));
+  row.append(el("button", { class: "pill", onclick: openCustomWater }, "＋ Custom"));
+  card.append(row);
+  // Today's entries with timestamps + delete
+  if (water.entries && water.entries.length) {
+    const list = el("div", { class: "list", style: "margin-top:8px" });
+    water.entries.forEach((e) => {
+      const oz = disp(e.amount_ml, "ml");
+      list.append(el("div", { class: "lrow" },
+        el("div", { class: "l-icon" }, "💧"),
+        el("div", { class: "l-main" },
+          el("div", { class: "l-title" }, fmt(oz.value) + " fl oz"),
+          el("div", { class: "l-sub" }, timeOf(e.created_at))),
+        el("button", { class: "del", onclick: async () => {
+          await jdel("/api/water/" + e.id); toast("Removed"); switchTab("food");
+        } }, "✕")));
+    });
+    card.append(list);
+  } else {
+    card.append(el("div", { class: "empty", style: "padding:18px 12px 4px" },
+      "No water logged yet — tap a button above."));
+  }
+  return card;
+}
+
+async function addFoodWater(oz) {
+  await jpost("/api/water", { amount_ml: toMetric(oz, "ml"), date: State.foodDate });
+  toast(`+${oz} oz water`); switchTab("food");
+}
+
+function openCustomWater() {
+  const input = el("input", { type: "number", placeholder: "Fluid ounces", inputmode: "decimal" });
+  const body = el("div", {},
+    el("p", { class: "muted", style: "margin-top:0" }, "Log a custom amount"),
+    el("div", { class: "field" }, input),
+    el("button", { class: "btn full", onclick: async () => {
+      const v = num(input.value); if (!v) return;
+      await jpost("/api/water", { amount_ml: toMetric(v, "ml"), date: State.foodDate });
+      closeSheet(); toast("Water logged"); switchTab("food");
+    } }, "Add water"));
+  openSheet("Add water", body);
 }
 
 /* ---- Quick Add (favorites) ---- */
