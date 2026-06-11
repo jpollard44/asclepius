@@ -211,6 +211,10 @@ a { color: var(--teal); }
 .bar.amber > span { background: var(--amber); }
 .bar.blue > span { background: var(--blue); }
 .bar.violet > span { background: var(--violet); }
+/* Goal-progress tones: on track / close / off-track (green / amber / coral). */
+.bar.good > span { background: var(--green); }
+.bar.mid  > span { background: var(--amber); }
+.bar.low  > span { background: var(--coral); }
 
 /* macro mini-bars */
 .macros { display: flex; gap: 14px; margin-top: 10px; }
@@ -220,6 +224,33 @@ a { color: var(--teal); }
 .macro.p .m-val { color: var(--blue); }
 .macro.c .m-val { color: var(--amber); }
 .macro.f .m-val { color: var(--coral); }
+.macro .m-pct { font-size: 11px; color: var(--faint); margin-top: 2px; font-weight: 600; }
+
+/* Daily-targets card (Food tab) — labelled goal progress rows. */
+.tgt-row { margin: 12px 0 0; }
+.tgt-row:first-of-type { margin-top: 4px; }
+.tgt-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; margin-bottom: 5px; }
+.tgt-name { color: var(--ink); font-weight: 600; }
+.tgt-val { color: var(--muted); font-variant-numeric: tabular-nums; }
+.tgt-val.over { color: var(--coral); font-weight: 600; }
+
+/* Per-serving goal contribution on quick-add cards / manage rows. */
+.qadd-pct { font-size: 10.5px; color: var(--faint); margin-top: 3px; font-weight: 600; }
+.fav-mpct { font-size: 11.5px; color: var(--teal); margin-top: 3px; }
+
+/* Daily-goals editor rows in Settings. */
+.settings-row.goal-row { align-items: center; }
+.goal-input-wrap { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.goal-input {
+  width: 80px; text-align: right; padding: 8px 10px; font-size: 15px; font-weight: 600;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  color: var(--ink); font-variant-numeric: tabular-nums;
+}
+.goal-input:focus { outline: none; border-color: var(--teal); }
+.goal-unit { font-size: 12.5px; color: var(--muted); min-width: 34px; }
+.goal-note.good { color: var(--green); }
+.goal-note.mid { color: var(--amber); }
+.goal-note.low { color: var(--coral); }
 
 /* rings */
 .ring-wrap { display: flex; align-items: center; gap: 18px; }

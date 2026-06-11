@@ -144,6 +144,35 @@ GOAL_CATEGORIES = {
 DEFAULT_WATER_GOAL_ML = 2957
 
 # ---------------------------------------------------------------------------
+# Personalized daily targets
+# ---------------------------------------------------------------------------
+# The daily amount the user is actually aiming for on each tracked metric, used
+# to draw the "% of daily goal" indicator on every card. These are *personal*
+# defaults for the user (Jordan: an active ~127 lb / 57.6 kg male training for
+# body composition) — deliberately NOT the generic FDA 2,000 kcal / 50 g protein
+# food-label values. Protein is ~1 g per lb of bodyweight; calories are
+# maintenance for an active male this size; sugar and sodium are ceilings.
+#
+# Each entry carries the target, its canonical unit (water is ml like the rest
+# of the app; the UI converts to fl oz at the edge), and ``lower_better`` for
+# metrics where staying *under* the number is the win (sugar, sodium) so the
+# colour coding inverts. The live values are merged with any user overrides
+# saved in app_kv (survives a re-import) — see store.get_daily_goals.
+DAILY_GOAL_METRICS = {
+    "calories":      {"label": "Calories",      "unit": "kcal", "target": 2200,  "lower_better": False},
+    "protein":       {"label": "Protein",       "unit": "g",    "target": 130,   "lower_better": False},
+    "carbs":         {"label": "Carbs",         "unit": "g",    "target": 250,   "lower_better": False},
+    "fat":           {"label": "Fat",           "unit": "g",    "target": 70,    "lower_better": False},
+    "fiber":         {"label": "Fiber",         "unit": "g",    "target": 30,    "lower_better": False},
+    "sugar":         {"label": "Sugar",         "unit": "g",    "target": 40,    "lower_better": True},
+    "sodium":        {"label": "Sodium",        "unit": "mg",   "target": 2300,  "lower_better": True},
+    "water":         {"label": "Water",         "unit": "ml",   "target": DEFAULT_WATER_GOAL_ML, "lower_better": False},
+    "steps":         {"label": "Steps",         "unit": "",     "target": 10000, "lower_better": False},
+    "active_energy": {"label": "Active energy", "unit": "kcal", "target": 500,   "lower_better": False},
+    "sleep":         {"label": "Sleep",         "unit": "h",    "target": 8,     "lower_better": False},
+}
+
+# ---------------------------------------------------------------------------
 # Web push notifications
 # ---------------------------------------------------------------------------
 # VAPID keypair (generate with scripts/gen_vapid.py, stored in .env). Without a

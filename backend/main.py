@@ -385,6 +385,27 @@ def nutrition(days: int = 30) -> dict:
     return analytics.nutrition_summary(days)
 
 
+# ---------------------------------------------------------------------------
+# Personalized daily goals
+# ---------------------------------------------------------------------------
+class DailyGoalsUpdate(BaseModel):
+    # Map of metric key (calories, protein, …) → new target. A null value resets
+    # that metric to its personalized default.
+    goals: dict[str, float | None]
+
+
+@app.get("/api/daily-goals")
+def daily_goals() -> dict:
+    """The user's personalized daily target for every tracked metric."""
+    return {"goals": store.get_daily_goals()}
+
+
+@app.put("/api/daily-goals")
+def update_daily_goals(req: DailyGoalsUpdate) -> dict:
+    """Edit one or more daily targets (Settings → Daily goals)."""
+    return {"goals": store.set_daily_goals(req.goals)}
+
+
 @app.get("/api/nutrition/detail")
 def nutrition_detail(days: int = 30) -> dict:
     """Macro+micro daily series, goals, today's per-meal split, and top food

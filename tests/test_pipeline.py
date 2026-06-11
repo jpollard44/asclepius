@@ -70,3 +70,40 @@ def test_workouts_parsed_with_stats(loaded_db):
 def test_trend_direction_present(loaded_db):
     summ = analytics.metric_summary("steps", 60)
     assert summ["trend"]["direction"] in {"up", "down", "flat"}
+
+
+def test_daily_goals_personalized_defaults(tmp_path):
+    """Daily targets default to the personalized (non-FDA) values and every
+    tracked metric is present."""
+    db = tmp_path / "goals.db"
+    goals = store.get_daily_goals(db_path=db)
+    assert {"calories", "protein", "carbs", "fat", "fiber", "sugar",
+            "sodium", "water", "steps", "active_energy", "sleep"} <= set(goals)
+    # Active 127 lb male — not the 2,000 kcal / 50 g label defaults.
+    assert goals["calories"]["target"] == 2200
+    assert goals["protein"]["target"] == 130
+    assert goals["sugar"]["lower_better"] is True
+    assert goals["calories"]["customized"] is False
+
+
+def test_daily_goals_override_and_reset(tmp_path):
+    db = tmp_path / "goals.db"
+    updated = store.set_daily_goals({"calories": 2400}, db_path=db)
+    assert updated["calories"]["target"] == 2400
+    assert updated["calories"]["customized"] is True
+    # Other metrics keep their defaults.
+    assert updated["protein"]["target"] == 130
+    # A null value resets to the recommended default.
+    reset = store.set_daily_goals({"calories": None}, db_path=db)
+    assert reset["calories"]["target"] == 2200
+    assert reset["calories"]["customized"] is False
+
+
+def test_nutrition_goals_flow_from_daily_goals(tmp_path):
+    """today_nutrition surfaces the daily targets under *_goal keys."""
+    db = tmp_path / "goals.db"
+    store.set_daily_goals({"protein": 140}, db_path=db)
+    today = analytics.today_nutrition(db_path=db)
+    assert today["protein_goal"] == 140
+    assert today["kcal_goal"] == 2200
+    assert today["sodium_goal"] == 2300

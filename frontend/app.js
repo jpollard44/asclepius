@@ -88,6 +88,7 @@ const State = {
   advisorReady: true,
   tab: "dashboard",
   foodDate: todayISO(),
+  goals: {},   // personalized daily targets, keyed by metric (see loadGoals)
 };
 const charts = {}; // id -> Chart instance
 
@@ -113,6 +114,7 @@ async function init() {
     State.status = status;
     State.config = status.config || State.config;
     State.advisorReady = status.advisor_ready;
+    await loadGoals();
     if (status.has_data) enterApp();
     else showUpload();
   } catch (e) {
@@ -320,18 +322,23 @@ async function renderDashboard() {
   const weight = d.weight ? disp(d.weight.value, "kg") : null;
   const grid = el("div", { class: "stat-grid" });
   grid.append(
-    statCard("🔥 Calories", n.kcal ? fmt(n.kcal) : "—", n.kcal_goal ? `of ${fmt(n.kcal_goal)} kcal` : "logged today",
-      n.kcal_goal ? pct(n.kcal, n.kcal_goal) : null, "", openCaloriesDetail),
-    statCard("💪 Protein", n.protein ? fmt(n.protein) + "g" : "—", n.protein_goal ? `of ${fmt(n.protein_goal)}g` : "today",
-      n.protein_goal ? pct(n.protein, n.protein_goal) : null, "blue", openProteinDetail),
-    statCard("💧 Water", fmt(wTotal.value) + " fl oz", `of ${fmt(wGoal.value)} fl oz`, w.pct, "blue", openWaterDetail),
-    statCard("👟 Steps", d.steps_today != null ? fmt(d.steps_today) : "—", "today", null, "",
-      () => openMetricDetail("steps", { label: "Steps", periods: [7, 30, 90, 365], default: 30 })),
-    statCard("⚡ Active energy", d.active_energy_today != null ? fmt(d.active_energy_today) + " kcal" : "—", "today", null, "",
-      () => openMetricDetail("active_energy", { label: "Active Energy", periods: [7, 30, 90, 365], default: 30 })),
-    statCard("⚖️ Weight", weight ? fmt(weight.value, 1) + " lb" : "—", d.weight ? d.weight.date : "no data", null, "", openWeightDetail),
-    statCard("😴 Sleep", d.sleep_last ? round(d.sleep_last.asleep_hours, 1) + "h" : "—", d.sleep_last ? "last night" : "no data", null, "", openSleepDetail),
-    statCard("🏋 Workouts", d.workouts_week, "this week", null, "", openWorkoutsDetail));
+    statCard("🔥 Calories", n.kcal ? fmt(n.kcal) : "—", `of ${fmt(n.kcal_goal || State.goals.calories?.target)} kcal`,
+      { goalKey: "calories", current: n.kcal, onclick: openCaloriesDetail }),
+    statCard("💪 Protein", n.protein ? fmt(n.protein) + "g" : "—", `of ${fmt(n.protein_goal || State.goals.protein?.target)}g`,
+      { goalKey: "protein", current: n.protein, onclick: openProteinDetail }),
+    statCard("💧 Water", fmt(wTotal.value) + " fl oz", `of ${fmt(wGoal.value)} fl oz`,
+      { goalKey: "water", current: w.total_ml, color: "blue", pctVal: w.pct, onclick: openWaterDetail }),
+    statCard("👟 Steps", d.steps_today != null ? fmt(d.steps_today) : "—", goalSub("steps"),
+      { goalKey: "steps", current: d.steps_today,
+        onclick: () => openMetricDetail("steps", { label: "Steps", periods: [7, 30, 90, 365], default: 30 }) }),
+    statCard("⚡ Active energy", d.active_energy_today != null ? fmt(d.active_energy_today) + " kcal" : "—", goalSub("active_energy"),
+      { goalKey: "active_energy", current: d.active_energy_today,
+        onclick: () => openMetricDetail("active_energy", { label: "Active Energy", periods: [7, 30, 90, 365], default: 30 }) }),
+    statCard("⚖️ Weight", weight ? fmt(weight.value, 1) + " lb" : "—", d.weight ? d.weight.date : "no data",
+      { onclick: openWeightDetail }),
+    statCard("😴 Sleep", d.sleep_last ? round(d.sleep_last.asleep_hours, 1) + "h" : "—", d.sleep_last ? goalSub("sleep", "last night") : "no data",
+      { goalKey: d.sleep_last ? "sleep" : null, current: d.sleep_last?.asleep_hours, onclick: openSleepDetail }),
+    statCard("🏋 Workouts", d.workouts_week, "this week", { onclick: openWorkoutsDetail }));
   screen.append(grid);
 
   // Streaks
@@ -377,12 +384,22 @@ function qa(icon, lbl, onclick) {
   return el("div", { class: "qa", onclick },
     el("div", { class: "qa-icon" }, icon), el("div", { class: "qa-lbl" }, lbl));
 }
-function statCard(label, value, sub, pctVal, color = "", onclick = null) {
+// opts: { goalKey, current, pctVal, color, onclick }. When goalKey is given and
+// State has that goal, the card shows a colour-coded bar + "· N%" against the
+// personalized daily target; otherwise it falls back to pctVal/color.
+function statCard(label, value, sub, opts = {}) {
+  const { goalKey, current, color = "", onclick = null } = opts;
+  let pctVal = opts.pctVal, tone = color, pctTxt = null;
+  if (goalKey && State.goals[goalKey] && current != null) {
+    const p = goalPct(goalKey, current);
+    if (p != null) { pctVal = Math.min(100, p); tone = goalTone(goalKey, current); pctTxt = p + "%"; }
+  }
+  const subTxt = sub ? (pctTxt ? `${sub} · ${pctTxt}` : sub) : null;
   const node = el("div", { class: "stat" + (onclick ? " tappable" : ""), onclick },
     el("div", { class: "label" }, label),
     el("div", { class: "value", html: String(value) }),
-    sub ? el("div", { class: "sub" }, sub) : null);
-  if (pctVal != null) node.append(el("div", { class: "bar " + color }, el("span", { style: `width:${Math.min(100, pctVal)}%` })));
+    subTxt ? el("div", { class: "sub" }, subTxt) : null);
+  if (pctVal != null) node.append(el("div", { class: "bar " + tone }, el("span", { style: `width:${Math.min(100, pctVal)}%` })));
   return node;
 }
 function streakBox(icon, n, lbl, onclick) {
@@ -391,6 +408,58 @@ function streakBox(icon, n, lbl, onclick) {
     el("div", { class: "s-lbl" }, lbl));
 }
 const pct = (v, goal) => goal ? round((num(v) / goal) * 100) : 0;
+
+/* ============================================================
+   Personalized daily goals
+   ------------------------------------------------------------
+   State.goals holds the user's target for each metric (calories, protein,
+   water, steps, …), loaded once at boot and refreshed when edited in Settings.
+   Every card measures the current value against these to show "% of daily goal"
+   and a colour-coded bar (green on track, amber close, coral off-track — and
+   inverted for sugar/sodium, where staying *under* the number is the win).
+   ============================================================ */
+async function loadGoals() {
+  try { State.goals = (await api("/api/daily-goals")).goals || {}; }
+  catch { State.goals = State.goals || {}; }
+  return State.goals;
+}
+// Percentage of the daily goal a value represents (null if no goal for the key).
+function goalPct(key, value) {
+  const g = State.goals[key];
+  if (!g || !g.target || value == null) return null;
+  return round((num(value) / g.target) * 100);
+}
+// Colour tone for a value vs its goal: "good" | "mid" | "low".
+// Higher-is-better: ≥75% good, 50–75% mid, <50% low.
+// Lower-is-better (sugar, sodium): ≤75% good, 75–100% mid, over budget low.
+function goalTone(key, value) {
+  const g = State.goals[key];
+  if (!g || !g.target || value == null) return "";
+  const p = (num(value) / g.target) * 100;
+  if (g.lower_better) return p <= 75 ? "good" : p <= 100 ? "mid" : "low";
+  return p >= 75 ? "good" : p >= 50 ? "mid" : "low";
+}
+// Sub-label for a card showing the goal, e.g. "of 10,000" or "of 500 kcal".
+function goalSub(key, fallback = "today") {
+  const g = State.goals[key];
+  if (!g || !g.target) return fallback;
+  const u = key === "calories" ? "kcal" : (g.unit || "");
+  return `of ${fmt(g.target)}${u ? " " + u : ""}`;
+}
+// A labelled goal progress row (Daily-targets card on the Food tab).
+function goalBarRow(key, value) {
+  const g = State.goals[key];
+  if (!g || !g.target) return null;
+  const p = goalPct(key, value), tone = goalTone(key, value);
+  const dp = (key === "fiber" || key === "sugar") ? 1 : 0;
+  const unit = key === "calories" ? "kcal" : (g.unit || "");
+  return el("div", { class: "tgt-row" },
+    el("div", { class: "tgt-top" },
+      el("span", { class: "tgt-name" }, g.label + (g.lower_better ? " (max)" : "")),
+      el("span", { class: "tgt-val" + (g.lower_better && p > 100 ? " over" : "") },
+        `${fmt(value, dp)} / ${fmt(g.target)} ${unit} · ${p}%`)),
+    el("div", { class: "bar " + tone }, el("span", { style: `width:${Math.min(100, p)}%` })));
+}
 
 /* ============================================================
    FOOD
@@ -418,16 +487,36 @@ async function renderFood() {
   // Quick Add — saved favorites logged with a single tap.
   screen.append(quickAddSection(favs.favorites || []));
 
-  // Totals card with macro split — tap to drill into calories
+  // Day totals including micros (list_food totals only carry the four macros).
   const t = log.totals;
+  const tot = { kcal: t.kcal, protein: t.protein, carbs: t.carbs, fat: t.fat, fiber: 0, sugar: 0, sodium: 0 };
+  (log.entries || []).forEach((e) => { tot.fiber += num(e.fiber); tot.sugar += num(e.sugar); tot.sodium += num(e.sodium); });
+
+  // Totals card with macro split — tap to drill into calories
+  const calGoal = State.goals.calories?.target;
+  const calPct = goalPct("calories", t.kcal);
   screen.append(el("div", { class: "card d-tap", onclick: openCaloriesDetail },
     el("div", { class: "ring-wrap" },
       el("div", {}, el("div", { class: "value", style: "font-size:30px;font-weight:800" }, fmt(t.kcal)),
-        el("div", { class: "muted", style: "font-size:13px" }, "calories today ›")),
+        el("div", { class: "muted", style: "font-size:13px" },
+          calGoal ? `of ${fmt(calGoal)} kcal · ${calPct}% ›` : "calories today ›")),
       el("div", { class: "grow macros" },
-        macroBox("p", "Protein", t.protein),
-        macroBox("c", "Carbs", t.carbs),
-        macroBox("f", "Fat", t.fat)))));
+        macroBox("p", "Protein", t.protein, "protein"),
+        macroBox("c", "Carbs", t.carbs, "carbs"),
+        macroBox("f", "Fat", t.fat, "fat")))));
+
+  // Daily targets — every macro & micro against the personalized goal.
+  if (Object.keys(State.goals).length) {
+    const card = el("div", { class: "card" },
+      el("div", { class: "card-head" }, el("h3", {}, "Daily targets"),
+        el("a", { class: "link text-btn", onclick: openSettings }, "Edit")));
+    [["calories", "kcal"], ["protein", "protein"], ["carbs", "carbs"], ["fat", "fat"],
+     ["fiber", "fiber"], ["sugar", "sugar"], ["sodium", "sodium"]].forEach(([gk, vk]) => {
+      const row = goalBarRow(gk, tot[vk]);
+      if (row) card.append(row);
+    });
+    screen.append(card);
+  }
 
   // Add buttons per meal
   State.config.meals.forEach((meal) => {
@@ -459,9 +548,12 @@ async function renderFood() {
     });
   }
 }
-function macroBox(cls, lbl, val) {
+function macroBox(cls, lbl, val, goalKey) {
+  const p = goalKey ? goalPct(goalKey, val) : null;
   return el("div", { class: "macro " + cls },
-    el("div", { class: "m-val" }, fmt(val) + "g"), el("div", { class: "m-lbl" }, lbl));
+    el("div", { class: "m-val" }, fmt(val) + "g"),
+    el("div", { class: "m-lbl" }, lbl),
+    p != null ? el("div", { class: "m-pct" }, p + "%") : null);
 }
 
 /* ---- Quick Add (favorites) ---- */
@@ -485,14 +577,23 @@ function quickAddSection(favorites) {
 
 function quickAddCard(fav) {
   const icon = FAV_ICONS[fav.category] || "🍎";
-  const card = el("div", { class: "qadd-card", title: fav.description || fav.name },
+  const calPct = goalPct("calories", fav.calories), proPct = goalPct("protein", fav.protein_g);
+  const card = el("div", { class: "qadd-card", title: favGoalSummary(fav) || fav.description || fav.name },
     el("div", { class: "qadd-emoji" }, icon),
     el("div", { class: "qadd-name" }, fav.name),
     el("div", { class: "qadd-kcal" }, fmt(fav.calories) + " kcal · " + fmt(fav.protein_g) + "P"),
+    calPct != null ? el("div", { class: "qadd-pct" }, `${calPct}% cals · ${proPct}% protein`) : null,
     el("button", { class: "qadd-plus", "aria-label": "Log " + fav.name,
       onclick: (e) => { e.stopPropagation(); logFavorite(fav, card); } }, "+"));
   card.addEventListener("click", () => logFavorite(fav, card));
   return card;
+}
+
+// "20% of daily calories, 33% of daily protein" — what one serving contributes.
+function favGoalSummary(fav) {
+  const c = goalPct("calories", fav.calories), p = goalPct("protein", fav.protein_g);
+  if (c == null) return "";
+  return `${fav.name}: ${c}% of daily calories, ${p}% of daily protein`;
 }
 
 // Optimistic one-tap log: flash the card, toast immediately, then sync totals.
@@ -549,7 +650,11 @@ function favManageRow(fav, idx, favorites) {
       el("div", { class: "fav-mname" }, icon + " " + fav.name),
       el("div", { class: "fav-msub" },
         fmt(fav.calories) + " kcal · " + fmt(fav.protein_g) + "P "
-        + fmt(fav.carbs_g) + "C " + fmt(fav.fat_g) + "F")),
+        + fmt(fav.carbs_g) + "C " + fmt(fav.fat_g) + "F"),
+      goalPct("calories", fav.calories) != null
+        ? el("div", { class: "fav-mpct" },
+            `${goalPct("calories", fav.calories)}% of daily calories · ${goalPct("protein", fav.protein_g)}% of daily protein`)
+        : null),
     el("button", { class: "del", "aria-label": "Delete",
       onclick: async (e) => {
         e.stopPropagation();
@@ -1701,7 +1806,9 @@ function timeOf(iso) {
 }
 
 // Period control + stats + line chart for one continuous metric series.
-function metricWindowBlock(host, series, unit, label, color, periods = [30, 90, 365], dflt = 90) {
+// `goal` (in display units) draws a dashed target line and swaps the "Change"
+// stat for how the windowed average compares to the goal.
+function metricWindowBlock(host, series, unit, label, color, periods = [30, 90, 365], dflt = 90, goal = null) {
   let cur = periods.includes(dflt) ? dflt : periods[periods.length - 1];
   const render = () => {
     destroyDetailCharts(); host.innerHTML = "";
@@ -1715,10 +1822,13 @@ function metricWindowBlock(host, series, unit, label, color, periods = [30, 90, 
       dStat(fmt(st.avg, dp), prettyUnit(unit), "Average"),
       dStat(fmt(st.min, dp), "", "Min"),
       dStat(fmt(st.max, dp), "", "Max"),
-      dStat((chg >= 0 ? "+" : "") + fmt(chg, dp), "", "Change")));
-    detailChart(host, `${label} — ${labelForDays(cur)}`, {
+      goal ? dStat(round(st.avg / goal * 100), "%", "Avg vs goal")
+           : dStat((chg >= 0 ? "+" : "") + fmt(chg, dp), "", "Change")));
+    const ds = [lineDataset(label, vals, color)];
+    if (goal) ds.push(goalLineDataset("goal", goal, s.length, AMBER));
+    detailChart(host, `${label} — ${labelForDays(cur)}${goal ? " (— goal)" : ""}`, {
       type: "line",
-      data: { labels: s.map((r) => r.date.slice(5)), datasets: [lineDataset(label, vals, color)] },
+      data: { labels: s.map((r) => r.date.slice(5)), datasets: ds },
       options: { scales: AXES, plugins: { legend: { display: false } } },
     });
   };
@@ -1736,10 +1846,15 @@ async function openMetricDetail(key, opts = {}) {
     const latest = series[series.length - 1];
     const dl = disp(latest.value, unit);
     body.append(dHero(fmt(dl.value, dpFor(unit)), prettyUnit(unit), `latest · ${latest.date}`, data.summary?.trend, opts.invert));
+    // Draw the personalized daily target as a dashed line when one exists for
+    // this metric (steps, active energy, …). Goals are in canonical units, the
+    // same scale the series renders in for these keys (count, kcal).
+    const goalCfg = State.goals[key];
+    const goalVal = goalCfg && goalCfg.target ? goalCfg.target : null;
     const host = el("div", {}); body.append(host);
     metricWindowBlock(host, series, unit, opts.label || key,
       opts.color || (opts.area === "heart" ? CORAL : TEAL),
-      opts.periods || [30, 90, 365], opts.default || 90);
+      opts.periods || [30, 90, 365], opts.default || 90, goalVal);
   });
 }
 
@@ -1958,6 +2073,12 @@ async function openSleepDetail() {
     if (!series.length) { body.append(el("div", { class: "empty" }, "No sleep data yet. Log a night or import Apple Health.")); return; }
     const last = series[series.length - 1];
     body.append(dHero(round(last.asleep_hours, 1), "h asleep", `night of ${last.date}`, s.trend));
+    const sleepGoal = State.goals.sleep?.target;
+    if (sleepGoal) {
+      const tone = goalTone("sleep", last.asleep_hours);
+      body.append(el("div", { class: "d-hero-lbl goal-note " + tone, style: "text-align:center;margin:-4px 0 16px" },
+        `Goal ${fmt(sleepGoal)} h · last night ${goalPct("sleep", last.asleep_hours)}% · avg ${goalPct("sleep", s.avg_asleep_hours)}%`));
+    }
     // Last night
     const eff = last.in_bed_hours ? round(last.asleep_hours / last.in_bed_hours * 100) : null;
     const stagesCard = dCard("Last night",
@@ -2290,9 +2411,13 @@ function toggle(checked, onchange) {
 async function openSettings() {
   const body = el("div", { class: "settings" }, loading("Loading settings…"));
   openSheet("Settings", body);
+  // Daily goals always come first and don't depend on push support.
+  const goals = await loadGoals();
+  body.innerHTML = "";
+  renderDailyGoals(body, goals);
+
   if (!pushSupported()) {
-    body.innerHTML = "";
-    body.append(el("p", { class: "muted" },
+    body.append(el("p", { class: "muted", style: "margin-top:18px" },
       "This browser doesn't support web push notifications. Install Asclepius to " +
       "your home screen (Share → Add to Home Screen) and open it from there to enable them."));
     return;
@@ -2301,15 +2426,60 @@ async function openSettings() {
   try {
     [prefs, vapid] = await Promise.all([api("/api/push/prefs"), api("/api/push/vapid")]);
   } catch (e) {
-    body.innerHTML = ""; body.append(el("p", { class: "muted" }, "Couldn't load settings: " + e.message));
+    body.append(el("p", { class: "muted", style: "margin-top:18px" }, "Couldn't load reminder settings: " + e.message));
     return;
   }
   const sub = await currentSubscription();
   renderSettings(body, prefs, vapid, !!sub);
 }
 
+/* ---- Daily goals editor ---- */
+function renderDailyGoals(body, goals) {
+  body.append(el("h4", { class: "settings-head" }, "Daily goals"));
+  body.append(el("p", { class: "settings-desc", style: "margin: 0 2px 10px" },
+    "Personalized targets every card measures against. Edit any to fit your plan; clear a field to reset to recommended."));
+  const group = el("div", { class: "settings-group" });
+  ["calories", "protein", "carbs", "fat", "fiber", "sugar", "sodium",
+   "water", "steps", "active_energy", "sleep"].forEach((key) => {
+    const g = goals[key];
+    if (g) group.append(goalEditRow(key, g));
+  });
+  body.append(group);
+}
+
+function goalEditRow(key, g) {
+  const isWater = g.unit === "ml";                 // stored ml, edited in fl oz
+  const unitLabel = isWater ? "fl oz" : (key === "calories" ? "kcal" : (g.unit || ""));
+  const toDisplay = (v) => isWater ? round(disp(v, "ml").value) : round(v, key === "sleep" ? 1 : 0);
+  const input = el("input", { class: "goal-input", type: "number", step: "any",
+    inputmode: "decimal", value: toDisplay(g.target) });
+  const recommended = el("div", { class: "settings-desc" },
+    g.customized ? `Recommended ${fmt(toDisplay(g.default))} ${unitLabel}` : "Recommended for you");
+  const save = async () => {
+    const raw = input.value.trim();
+    let payload;
+    if (raw === "") { payload = null; }            // reset to default
+    else { let v = num(raw); if (isWater) v = round(toMetric(v, "ml")); payload = v; }
+    try {
+      const res = await jput("/api/daily-goals", { goals: { [key]: payload } });
+      State.goals = res.goals;
+      const ng = State.goals[key];
+      input.value = toDisplay(ng.target);
+      recommended.textContent = ng.customized ? `Recommended ${fmt(toDisplay(ng.default))} ${unitLabel}` : "Recommended for you";
+      toast(g.label + " goal saved");
+      if (State.tab === "dashboard" || State.tab === "food") switchTab(State.tab);
+    } catch (e) { toast("⚠ " + e.message); }
+  };
+  input.addEventListener("change", save);
+  return el("div", { class: "settings-row goal-row" },
+    el("div", {},
+      el("div", { class: "settings-label" }, g.label + (g.lower_better ? " (max)" : "")),
+      recommended),
+    el("div", { class: "goal-input-wrap" }, input, el("span", { class: "goal-unit" }, unitLabel)));
+}
+
 function renderSettings(body, prefs, vapid, subscribed) {
-  body.innerHTML = "";
+  // (Daily goals are already rendered above by openSettings; append below them.)
   const serverOff = !vapid.enabled;
 
   // ---- This device --------------------------------------------------------

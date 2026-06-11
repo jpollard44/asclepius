@@ -16,7 +16,7 @@ from .config import (
     MANUAL_METRICS,
     QUANTITY_TYPES,
 )
-from .store import connect, get_meta
+from .store import connect, daily_goal_target, get_daily_goals, get_meta
 
 # Metrics surfaced as headline cards on the dashboard overview.
 HEADLINE_METRICS = [
@@ -274,35 +274,41 @@ def nutrition_summary(days: int = 30, db_path=None) -> dict:
 
 
 def today_nutrition(db_path=None) -> dict:
-    """Calorie/macro totals logged today, against any active nutrition goals."""
+    """Calorie/macro/micro totals logged today, against the daily targets."""
     today = _today()
     with connect(db_path) as conn:
         row = conn.execute(
             "SELECT ROUND(SUM(kcal)) AS kcal, ROUND(SUM(protein)) AS protein, "
-            "ROUND(SUM(carbs)) AS carbs, ROUND(SUM(fat)) AS fat, COUNT(*) AS items "
+            "ROUND(SUM(carbs)) AS carbs, ROUND(SUM(fat)) AS fat, "
+            "ROUND(SUM(fiber), 1) AS fiber, ROUND(SUM(sugar), 1) AS sugar, "
+            "ROUND(SUM(sodium)) AS sodium, COUNT(*) AS items "
             "FROM food_log WHERE date = ?", (today,)).fetchone()
-        goal_rows = conn.execute(
-            "SELECT category, target FROM goals WHERE status = 'active' "
-            "AND category IN ('nutrition_calories', 'nutrition_protein')").fetchall()
-    goals = {r["category"]: r["target"] for r in goal_rows}
-    totals = {k: (row[k] or 0) for k in ("kcal", "protein", "carbs", "fat")}
+    keys = ("kcal", "protein", "carbs", "fat", "fiber", "sugar", "sodium")
+    totals = {k: (row[k] or 0) for k in keys}
     return {
         "date": today,
         "items": row["items"] or 0,
         **totals,
-        "kcal_goal": goals.get("nutrition_calories"),
-        "protein_goal": goals.get("nutrition_protein"),
+        **_nutrition_goals(db_path),
     }
 
 
+# The daily-goal metric keys that map to food-log columns, and the goal field
+# name each one is surfaced under (kcal_goal, protein_goal, …). 'calories' is
+# the goal key; 'kcal' is the column, so they're named separately.
+_NUTRITION_GOAL_KEYS = {
+    "calories": "kcal_goal", "protein": "protein_goal", "carbs": "carbs_goal",
+    "fat": "fat_goal", "fiber": "fiber_goal", "sugar": "sugar_goal",
+    "sodium": "sodium_goal",
+}
+
+
 def _nutrition_goals(db_path=None) -> dict:
-    with connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT category, target FROM goals WHERE status = 'active' "
-            "AND category IN ('nutrition_calories', 'nutrition_protein')").fetchall()
-    goals = {r["category"]: r["target"] for r in rows}
-    return {"kcal_goal": goals.get("nutrition_calories"),
-            "protein_goal": goals.get("nutrition_protein")}
+    """The personalized daily targets for every nutrition metric, flattened to
+    the ``*_goal`` keys the dashboard and deep-dives read."""
+    goals = get_daily_goals(db_path=db_path)
+    return {field: goals[key]["target"] for key, field in _NUTRITION_GOAL_KEYS.items()
+            if key in goals}
 
 
 def nutrition_sources(days: int = 14, limit: int = 12, db_path=None) -> list[dict]:
@@ -541,13 +547,16 @@ def streaks(db_path=None) -> dict:
 
 
 def _active_water_goal(db_path=None) -> float:
+    # An explicit long-term water goal on the Goals tab wins; otherwise fall back
+    # to the user's personalized daily water target.
     with connect(db_path) as conn:
         row = conn.execute(
             "SELECT target FROM goals WHERE category = 'water' AND status = 'active' "
             "ORDER BY created_at DESC LIMIT 1").fetchone()
     if row and row["target"]:
         return float(row["target"])
-    return float(DEFAULT_WATER_GOAL_ML)
+    target = daily_goal_target("water", db_path=db_path)
+    return float(target) if target else float(DEFAULT_WATER_GOAL_ML)
 
 
 # ---------------------------------------------------------------------------
@@ -732,14 +741,11 @@ def _evaluate_achievements(db_path=None) -> set[str]:
     if _workout_week_streak(db_path) >= 3:
         earned.add("workout_streak_3")
 
-    # Protein goal hit on average over the last week.
+    # Protein goal hit on average over the last week (vs the daily target).
     nut = nutrition_summary(7, db_path)
-    with connect(db_path) as conn:
-        prow = conn.execute(
-            "SELECT target FROM goals WHERE category = 'nutrition_protein' "
-            "AND status = 'active' ORDER BY created_at DESC LIMIT 1").fetchone()
-    if nut.get("available") and prow and prow["target"] and \
-            nut["avg_protein"] >= prow["target"]:
+    protein_target = daily_goal_target("protein", db_path=db_path)
+    if nut.get("available") and protein_target and \
+            nut["avg_protein"] >= protein_target:
         earned.add("protein_hit")
 
     # 7.5h+ average sleep over a week.

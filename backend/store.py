@@ -12,7 +12,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .config import COMMON_FOODS, DB_PATH
+from .config import COMMON_FOODS, DAILY_GOAL_METRICS, DB_PATH
 
 # Marker for rows that came from an Apple Health export. Anything the user types
 # in by hand is stored as 'manual'. On re-import we only clear IMPORT rows.
@@ -645,6 +645,60 @@ def kv_set(key: str, value, db_path: Path | None = None) -> None:
             "INSERT INTO app_kv (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, json.dumps(value)))
+
+
+# ---------------------------------------------------------------------------
+# Personalized daily goals (survives re-import via app_kv)
+# ---------------------------------------------------------------------------
+def get_daily_goals(db_path: Path | None = None) -> dict:
+    """The user's daily target for each tracked metric, with any saved overrides.
+
+    Returns an ordered dict keyed by metric (calories, protein, …); each value
+    carries the catalogue defaults from config plus the live ``target`` (an
+    override if the user edited it, otherwise the personalized default) and a
+    ``customized`` flag so the UI can show what's been changed from recommended.
+    """
+    overrides = kv_get("daily_goals", default={}, db_path=db_path) or {}
+    out: dict[str, dict] = {}
+    for key, cfg in DAILY_GOAL_METRICS.items():
+        ov = overrides.get(key)
+        out[key] = {
+            "key": key,
+            **cfg,
+            "target": ov if ov is not None else cfg["target"],
+            "default": cfg["target"],
+            "customized": ov is not None,
+        }
+    return out
+
+
+def set_daily_goals(patch: dict, db_path: Path | None = None) -> dict:
+    """Apply a partial update to the daily targets and persist the overrides.
+
+    ``patch`` maps a metric key to a new target. A value of ``None`` clears the
+    override, resetting that metric to its personalized default. Unknown keys
+    are ignored. Returns the full goals view (same shape as get_daily_goals).
+    """
+    overrides = kv_get("daily_goals", default={}, db_path=db_path) or {}
+    for key, val in (patch or {}).items():
+        if key not in DAILY_GOAL_METRICS:
+            continue
+        if val is None:
+            overrides.pop(key, None)
+        else:
+            try:
+                overrides[key] = max(0.0, float(val))
+            except (TypeError, ValueError):
+                continue
+    kv_set("daily_goals", overrides, db_path=db_path)
+    return get_daily_goals(db_path=db_path)
+
+
+def daily_goal_target(key: str, db_path: Path | None = None) -> float | None:
+    """Just the live numeric target for one metric (or None if not tracked)."""
+    goals = get_daily_goals(db_path=db_path)
+    g = goals.get(key)
+    return g["target"] if g else None
 
 
 def touch_activity(db_path: Path | None = None) -> None:
