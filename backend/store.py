@@ -121,6 +121,27 @@ CREATE TABLE IF NOT EXISTS foods (
 );
 CREATE INDEX IF NOT EXISTS idx_foods_name ON foods(name);
 
+-- Quick-add favorites: meals/drinks the user logs over and over, saved once so
+-- they can be logged with a single tap. Macros are stored per single serving
+-- and copied straight into food_log when logged. Survives a re-import (it's
+-- user-authored, like manual food). Optional micros are nullable.
+CREATE TABLE IF NOT EXISTS favorites (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    description TEXT,                               -- ingredients / details
+    calories    REAL NOT NULL DEFAULT 0,
+    protein_g   REAL NOT NULL DEFAULT 0,
+    carbs_g     REAL NOT NULL DEFAULT 0,
+    fat_g       REAL NOT NULL DEFAULT 0,
+    fiber_g     REAL,
+    sugar_g     REAL,
+    sodium_mg   REAL,
+    category    TEXT NOT NULL DEFAULT 'snack',      -- breakfast/lunch/dinner/snack/drink
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_favorites_order ON favorites(sort_order);
+
 CREATE TABLE IF NOT EXISTS achievements (
     key         TEXT PRIMARY KEY,
     unlocked_at TEXT
@@ -273,6 +294,7 @@ def init_db(db_path: Path | None = None) -> None:
         conn.executescript(SCHEMA)
         _migrate(conn)
         _seed_foods(conn)
+        _seed_favorites(conn)
 
 
 def _now() -> str:
@@ -369,6 +391,33 @@ def _seed_foods(conn: sqlite3.Connection) -> None:
         "VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
         [(name, cat, serving, kcal, p, c, f)
          for (name, cat, serving, kcal, p, c, f) in COMMON_FOODS],
+    )
+
+
+def _seed_favorites(conn: sqlite3.Connection) -> None:
+    """Pre-load the user's regular quick-add items on first run.
+
+    Only runs while the table is empty, so a user who later clears or edits
+    their favorites never has these re-appear.
+    """
+    if conn.execute("SELECT COUNT(*) AS n FROM favorites").fetchone()["n"]:
+        return
+    now = _now()
+    seeds = [
+        # name, description, kcal, P, C, F, category
+        ("Protein Matcha",
+         "12 oz whole milk, 2 scoops OM Master Blend, 3 tbsp OM matcha latte powder",
+         445, 43, 18, 11, "drink"),
+        ("Chobani 30g Protein Drink, Strawberry",
+         "Single bottle", 170, 30, 8, 2, "drink"),
+    ]
+    conn.executemany(
+        "INSERT INTO favorites "
+        "(name, description, calories, protein_g, carbs_g, fat_g, category, "
+        " sort_order, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(name, desc, kcal, p, c, f, cat, i, now)
+         for i, (name, desc, kcal, p, c, f, cat) in enumerate(seeds)],
     )
 
 

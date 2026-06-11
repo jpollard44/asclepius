@@ -393,6 +393,79 @@ def nutrition_detail(days: int = 30) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Quick-add favorites
+# ---------------------------------------------------------------------------
+class FavoriteCreate(BaseModel):
+    name: str
+    description: str = ""
+    calories: float = 0
+    protein_g: float = 0
+    carbs_g: float = 0
+    fat_g: float = 0
+    fiber_g: float | None = None
+    sugar_g: float | None = None
+    sodium_mg: float | None = None
+    category: str = "snack"
+    sort_order: int | None = None
+
+
+class FavoriteUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    calories: float | None = None
+    protein_g: float | None = None
+    carbs_g: float | None = None
+    fat_g: float | None = None
+    fiber_g: float | None = None
+    sugar_g: float | None = None
+    sodium_mg: float | None = None
+    category: str | None = None
+    sort_order: int | None = None
+
+
+class FavoriteLog(BaseModel):
+    date: str | None = None
+    meal: str | None = None
+
+
+@app.get("/api/favorites")
+def favorites() -> dict:
+    return {"favorites": tracking.list_favorites()}
+
+
+@app.post("/api/favorites")
+def create_favorite(fav: FavoriteCreate) -> dict:
+    if not fav.name.strip():
+        raise HTTPException(status_code=400, detail="A name is required.")
+    return tracking.add_favorite(**fav.model_dump())
+
+
+@app.put("/api/favorites/{fav_id}")
+def update_favorite(fav_id: int, fav: FavoriteUpdate) -> dict:
+    updated = tracking.update_favorite(fav_id, **fav.model_dump(exclude_none=True))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Favorite not found.")
+    return updated
+
+
+@app.delete("/api/favorites/{fav_id}")
+def delete_favorite(fav_id: int) -> dict:
+    if not tracking.delete_favorite(fav_id):
+        raise HTTPException(status_code=404, detail="Favorite not found.")
+    return {"status": "ok"}
+
+
+@app.post("/api/favorites/{fav_id}/log")
+def log_favorite(fav_id: int, req: FavoriteLog | None = None) -> dict:
+    """One-tap log: create a food entry from a favorite. Returns the entry."""
+    req = req or FavoriteLog()
+    entry = tracking.log_favorite(fav_id, date=req.date, meal=req.meal)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Favorite not found.")
+    return {"status": "ok", "entry": entry}
+
+
+# ---------------------------------------------------------------------------
 # Water
 # ---------------------------------------------------------------------------
 class WaterEntry(BaseModel):

@@ -14,6 +14,7 @@ from .config import (
     DEFAULT_WATER_GOAL_ML,
     GOAL_CATEGORIES,
     MANUAL_METRICS,
+    MEALS,
 )
 from .store import SOURCE_MANUAL, SOURCE_SCALE, connect, init_db
 
@@ -139,6 +140,98 @@ def delete_food(entry_id: int, db_path: Path | None = None) -> bool:
     with connect(db_path) as conn:
         cur = conn.execute("DELETE FROM food_log WHERE id = ?", (entry_id,))
     return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Quick-add favorites
+# ---------------------------------------------------------------------------
+FAVORITE_FIELDS = {"name", "description", "calories", "protein_g", "carbs_g",
+                   "fat_g", "fiber_g", "sugar_g", "sodium_mg", "category",
+                   "sort_order"}
+
+
+def list_favorites(db_path: Path | None = None) -> list[dict]:
+    """All saved favorites, in the user's chosen order (oldest-created tiebreak)."""
+    init_db(db_path)
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM favorites ORDER BY sort_order, id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_favorite(fav_id: int, db_path: Path | None = None) -> dict | None:
+    init_db(db_path)
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM favorites WHERE id = ?", (fav_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def add_favorite(name: str, description: str = "", calories: float = 0,
+                 protein_g: float = 0, carbs_g: float = 0, fat_g: float = 0,
+                 fiber_g: float | None = None, sugar_g: float | None = None,
+                 sodium_mg: float | None = None, category: str = "snack",
+                 sort_order: int | None = None,
+                 db_path: Path | None = None) -> dict:
+    """Save a new quick-add favorite. Macros are per single serving."""
+    init_db(db_path)
+    with connect(db_path) as conn:
+        if sort_order is None:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM favorites").fetchone()
+            sort_order = row["n"]
+        cur = conn.execute(
+            "INSERT INTO favorites "
+            "(name, description, calories, protein_g, carbs_g, fat_g, "
+            " fiber_g, sugar_g, sodium_mg, category, sort_order, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (name.strip(), description, calories, protein_g, carbs_g, fat_g,
+             fiber_g, sugar_g, sodium_mg, category, sort_order, _now()))
+        fid = cur.lastrowid
+        row = conn.execute("SELECT * FROM favorites WHERE id = ?", (fid,)).fetchone()
+    return dict(row)
+
+
+def update_favorite(fav_id: int, db_path: Path | None = None,
+                    **fields) -> dict | None:
+    init_db(db_path)
+    sets = {k: v for k, v in fields.items()
+            if k in FAVORITE_FIELDS and v is not None}
+    if not sets:
+        return get_favorite(fav_id, db_path=db_path)
+    cols = ", ".join(f"{k} = ?" for k in sets)
+    with connect(db_path) as conn:
+        conn.execute(f"UPDATE favorites SET {cols} WHERE id = ?",
+                     (*sets.values(), fav_id))
+    return get_favorite(fav_id, db_path=db_path)
+
+
+def delete_favorite(fav_id: int, db_path: Path | None = None) -> bool:
+    init_db(db_path)
+    with connect(db_path) as conn:
+        cur = conn.execute("DELETE FROM favorites WHERE id = ?", (fav_id,))
+    return cur.rowcount > 0
+
+
+def log_favorite(fav_id: int, date: str | None = None, meal: str | None = None,
+                 db_path: Path | None = None) -> dict | None:
+    """One-tap log: drop a favorite into today's food log as one entry.
+
+    The favorite's ``category`` maps to a meal slot when it names one
+    (breakfast/lunch/dinner/snack); anything else (e.g. 'drink') falls into the
+    snack slot. Returns the created food-log entry, or None if the favorite is
+    gone.
+    """
+    fav = get_favorite(fav_id, db_path=db_path)
+    if not fav:
+        return None
+    if meal is None:
+        meal = fav["category"] if fav["category"] in MEALS else "snack"
+    return add_food(
+        fav["name"], fav["calories"], fav["protein_g"], fav["carbs_g"],
+        fav["fat_g"], meal=meal, qty=1, serving=fav.get("description") or "",
+        date=date, fiber=fav.get("fiber_g"), sugar=fav.get("sugar_g"),
+        sodium=fav.get("sodium_mg"), db_path=db_path)
 
 
 # ---------------------------------------------------------------------------

@@ -405,14 +405,18 @@ async function renderFood() {
       el("button", { class: "ghost-btn", onclick: () => shiftFoodDate(1) }, "›"))));
   screen.append(loading());
 
-  let log, nutrition;
+  let log, nutrition, favs;
   try {
-    [log, nutrition] = await Promise.all([
+    [log, nutrition, favs] = await Promise.all([
       api("/api/food?date=" + State.foodDate),
       api("/api/nutrition?days=30"),
+      api("/api/favorites"),
     ]);
   } catch (e) { screen.lastChild.replaceWith(el("div", { class: "empty" }, "⚠ " + e.message)); return; }
   screen.lastChild.remove();
+
+  // Quick Add — saved favorites logged with a single tap.
+  screen.append(quickAddSection(favs.favorites || []));
 
   // Totals card with macro split — tap to drill into calories
   const t = log.totals;
@@ -458,6 +462,185 @@ async function renderFood() {
 function macroBox(cls, lbl, val) {
   return el("div", { class: "macro " + cls },
     el("div", { class: "m-val" }, fmt(val) + "g"), el("div", { class: "m-lbl" }, lbl));
+}
+
+/* ---- Quick Add (favorites) ---- */
+const FAV_ICONS = { breakfast: "🍳", lunch: "🥗", dinner: "🍽", snack: "🍎", drink: "🥤" };
+
+function quickAddSection(favorites) {
+  const wrap = el("div", { class: "qadd-wrap" });
+  wrap.append(el("div", { class: "qadd-head" },
+    el("span", { class: "qadd-title" }, "⚡ Quick Add"),
+    el("button", { class: "qadd-edit", onclick: openManageFavorites }, "⚙ Edit")));
+  if (!favorites.length) {
+    wrap.append(el("div", { class: "qadd-empty", onclick: openManageFavorites },
+      "Save your go-to meals for one-tap logging →"));
+    return wrap;
+  }
+  const row = el("div", { class: "scroller qadd-scroller" });
+  favorites.forEach((f) => row.append(quickAddCard(f)));
+  wrap.append(row);
+  return wrap;
+}
+
+function quickAddCard(fav) {
+  const icon = FAV_ICONS[fav.category] || "🍎";
+  const card = el("div", { class: "qadd-card", title: fav.description || fav.name },
+    el("div", { class: "qadd-emoji" }, icon),
+    el("div", { class: "qadd-name" }, fav.name),
+    el("div", { class: "qadd-kcal" }, fmt(fav.calories) + " kcal · " + fmt(fav.protein_g) + "P"),
+    el("button", { class: "qadd-plus", "aria-label": "Log " + fav.name,
+      onclick: (e) => { e.stopPropagation(); logFavorite(fav, card); } }, "+"));
+  card.addEventListener("click", () => logFavorite(fav, card));
+  return card;
+}
+
+// Optimistic one-tap log: flash the card, toast immediately, then sync totals.
+async function logFavorite(fav, card) {
+  if (card) {
+    if (card.dataset.busy) return;       // ignore double-taps mid-request
+    card.dataset.busy = "1";
+    card.classList.add("logged");
+  }
+  toast("Logged " + fav.name + " ✓");
+  try {
+    await jpost("/api/favorites/" + fav.id + "/log", { date: State.foodDate });
+    if (State.tab === "food") switchTab("food");   // refresh totals & meal lists
+  } catch (e) {
+    toast("⚠ " + e.message);
+    if (card) { card.classList.remove("logged"); delete card.dataset.busy; }
+  }
+}
+
+/* ---- Manage favorites ---- */
+async function openManageFavorites() {
+  openSheet("Quick Add favorites", el("div", { class: "empty" }, loadingDots("Loading")));
+  let favorites;
+  try { favorites = (await api("/api/favorites")).favorites || []; }
+  catch (e) { openSheet("Quick Add favorites", el("div", { class: "empty" }, "⚠ " + e.message)); return; }
+  renderManageFavorites(favorites);
+}
+
+function loadingDots(msg) { return el("div", { class: "thinking dots" }, msg); }
+
+function renderManageFavorites(favorites) {
+  const body = el("div", {});
+  const list = el("div", { class: "fav-manage-list" });
+  if (!favorites.length) {
+    list.append(el("div", { class: "empty" }, "No favorites yet."));
+  }
+  favorites.forEach((f, i) => list.append(favManageRow(f, i, favorites)));
+  body.append(list,
+    el("button", { class: "btn full", style: "margin-top:14px",
+      onclick: () => openFavoriteForm(null) }, "+ Add favorite"));
+  openSheet("Quick Add favorites", body);
+}
+
+function favManageRow(fav, idx, favorites) {
+  const icon = FAV_ICONS[fav.category] || "🍎";
+  const reorder = el("div", { class: "fav-reorder" },
+    el("button", { class: "fav-move", disabled: idx === 0, "aria-label": "Move up",
+      onclick: () => moveFavorite(favorites, idx, -1) }, "▲"),
+    el("button", { class: "fav-move", disabled: idx === favorites.length - 1, "aria-label": "Move down",
+      onclick: () => moveFavorite(favorites, idx, 1) }, "▼"));
+  return el("div", { class: "fav-mrow" },
+    reorder,
+    el("div", { class: "fav-mmain", onclick: () => openFavoriteForm(fav) },
+      el("div", { class: "fav-mname" }, icon + " " + fav.name),
+      el("div", { class: "fav-msub" },
+        fmt(fav.calories) + " kcal · " + fmt(fav.protein_g) + "P "
+        + fmt(fav.carbs_g) + "C " + fmt(fav.fat_g) + "F")),
+    el("button", { class: "del", "aria-label": "Delete",
+      onclick: async (e) => {
+        e.stopPropagation();
+        await jdel("/api/favorites/" + fav.id);
+        renderManageFavorites(favorites.filter((x) => x.id !== fav.id));
+        if (State.tab === "food") refreshQuickAdd();
+      } }, "🗑"));
+}
+
+// Swap a favorite with its neighbour and persist both sort_orders.
+async function moveFavorite(favorites, idx, dir) {
+  const j = idx + dir;
+  if (j < 0 || j >= favorites.length) return;
+  const a = favorites[idx], b = favorites[j];
+  [favorites[idx], favorites[j]] = [b, a];
+  renderManageFavorites(favorites);          // optimistic reorder
+  try {
+    await Promise.all([
+      jput("/api/favorites/" + a.id, { sort_order: j }),
+      jput("/api/favorites/" + b.id, { sort_order: idx }),
+    ]);
+    a.sort_order = j; b.sort_order = idx;
+    if (State.tab === "food") refreshQuickAdd();
+  } catch (e) { toast("⚠ " + e.message); }
+}
+
+function openFavoriteForm(fav) {
+  const editing = !!fav;
+  const f = fav || { category: "snack" };
+  const name = el("input", { placeholder: "e.g. Protein Matcha", value: f.name || "" });
+  const desc = el("input", { placeholder: "ingredients / details (optional)", value: f.description || "" });
+  const cats = ["breakfast", "lunch", "dinner", "snack", "drink"];
+  const category = el("select", {}, ...cats.map((c) =>
+    el("option", { value: c, selected: f.category === c }, (FAV_ICONS[c] || "") + " " + c)));
+  const numIn = (k, ph) => el("input", { type: "number", step: "any", inputmode: "decimal",
+    placeholder: ph, value: f[k] != null ? f[k] : "" });
+  const calories = numIn("calories", "kcal"), protein = numIn("protein_g", "g");
+  const carbs = numIn("carbs_g", "g"), fat = numIn("fat_g", "g");
+  const fiber = numIn("fiber_g", "g"), sugar = numIn("sugar_g", "g"), sodium = numIn("sodium_mg", "mg");
+  const field = (label, node) => el("div", { class: "field grow" }, el("label", {}, label), node);
+
+  const body = el("div", {},
+    field("Name", name),
+    field("Description", desc),
+    field("Category", category),
+    el("div", { class: "row" }, field("Calories", calories), field("Protein (g)", protein)),
+    el("div", { class: "row" }, field("Carbs (g)", carbs), field("Fat (g)", fat)),
+    el("div", { class: "section-title", style: "margin-top:4px" }, "Optional micros"),
+    el("div", { class: "row" }, field("Fiber (g)", fiber), field("Sugar (g)", sugar)),
+    field("Sodium (mg)", sodium),
+    el("button", { class: "btn full", style: "margin-top:10px", onclick: async () => {
+      if (!name.value.trim()) return toast("Name required");
+      const payload = {
+        name: name.value.trim(), description: desc.value.trim(),
+        category: category.value,
+        calories: num(calories.value), protein_g: num(protein.value),
+        carbs_g: num(carbs.value), fat_g: num(fat.value),
+        fiber_g: fiber.value === "" ? null : num(fiber.value),
+        sugar_g: sugar.value === "" ? null : num(sugar.value),
+        sodium_mg: sodium.value === "" ? null : num(sodium.value),
+      };
+      try {
+        if (editing) await jput("/api/favorites/" + f.id, payload);
+        else await jpost("/api/favorites", payload);
+      } catch (e) { return toast("⚠ " + e.message); }
+      toast(editing ? "Saved" : "Favorite added");
+      openManageFavorites();
+      if (State.tab === "food") refreshQuickAdd();
+    } }, editing ? "Save changes" : "Add favorite"));
+
+  if (editing) {
+    body.append(el("button", { class: "btn danger full", style: "margin-top:10px",
+      onclick: async () => {
+        await jdel("/api/favorites/" + f.id);
+        toast("Deleted");
+        openManageFavorites();
+        if (State.tab === "food") refreshQuickAdd();
+      } }, "Delete favorite"));
+  }
+  openSheet(editing ? "Edit favorite" : "New favorite", body);
+}
+
+// Re-fetch just the Quick Add row and swap it in, so managing favorites updates
+// the Food tab behind the sheet without a full re-render.
+async function refreshQuickAdd() {
+  const existing = $(".qadd-wrap");
+  if (!existing) return;
+  try {
+    const favs = (await api("/api/favorites")).favorites || [];
+    existing.replaceWith(quickAddSection(favs));
+  } catch {}
 }
 function foodEntryRow(e) {
   return el("div", { class: "lrow d-tap-row", onclick: () => openFoodEntryDetail(e) },
