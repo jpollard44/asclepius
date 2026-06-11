@@ -429,6 +429,15 @@ function goalPct(key, value) {
   if (!g || !g.target || value == null) return null;
   return round((num(value) / g.target) * 100);
 }
+// HTML suffix showing what % of the daily goal a single value contributes,
+// e.g. " · <span…>18% daily</span>". Returns "" when no goal exists for the key.
+// A meaningful contribution (≥20% of the day in one item) is highlighted green;
+// everything else stays muted — it's informational, not a pass/fail signal.
+function dailyContribHtml(key, value) {
+  const p = goalPct(key, value);
+  if (p == null) return "";
+  return ` · <span class="kv-pct${p >= 20 ? " good" : ""}">${p}% daily</span>`;
+}
 // Colour tone for a value vs its goal: "good" | "mid" | "low".
 // Higher-is-better: ≥75% good, 50–75% mid, <50% low.
 // Lower-is-better (sugar, sodium): ≤75% good, 75–100% mid, over budget low.
@@ -2282,13 +2291,13 @@ function openFoodEntryDetail(e) {
       macroSplit(e.protein, e.carbs, e.fat),
       dStatsGrid(3, dStat(fmt(e.protein), "g", "Protein"), dStat(fmt(e.carbs), "g", "Carbs"), dStat(fmt(e.fat), "g", "Fat"))));
     const kv = el("div", { class: "kv-list" },
-      kvRow("Calories", fmt(e.kcal) + " kcal"),
-      kvRow("Protein", `${fmt(e.protein)} g · ${round(num(e.protein) * 4)} kcal`),
-      kvRow("Carbs", `${fmt(e.carbs)} g · ${round(num(e.carbs) * 4)} kcal`),
-      kvRow("Fat", `${fmt(e.fat)} g · ${round(num(e.fat) * 9)} kcal`));
-    if (e.fiber != null) kv.append(kvRow("Fiber", fmt(e.fiber, 1) + " g"));
-    if (e.sugar != null) kv.append(kvRow("Sugar", fmt(e.sugar, 1) + " g"));
-    if (e.sodium != null) kv.append(kvRow("Sodium", fmt(e.sodium) + " mg"));
+      kvRow("Calories", fmt(e.kcal) + " kcal" + dailyContribHtml("calories", e.kcal)),
+      kvRow("Protein", `${fmt(e.protein)} g · ${round(num(e.protein) * 4)} kcal` + dailyContribHtml("protein", e.protein)),
+      kvRow("Carbs", `${fmt(e.carbs)} g · ${round(num(e.carbs) * 4)} kcal` + dailyContribHtml("carbs", e.carbs)),
+      kvRow("Fat", `${fmt(e.fat)} g · ${round(num(e.fat) * 9)} kcal` + dailyContribHtml("fat", e.fat)));
+    if (e.fiber != null) kv.append(kvRow("Fiber", fmt(e.fiber, 1) + " g" + dailyContribHtml("fiber", e.fiber)));
+    if (e.sugar != null) kv.append(kvRow("Sugar", fmt(e.sugar, 1) + " g" + dailyContribHtml("sugar", e.sugar)));
+    if (e.sodium != null) kv.append(kvRow("Sodium", fmt(e.sodium) + " mg" + dailyContribHtml("sodium", e.sodium)));
     kv.append(kvRow("Serving", servingUS(e.serving) || "1 serving"));
     kv.append(kvRow("Quantity", round(e.qty, 2) + "×"));
     body.append(dCard("Nutrition", kv));

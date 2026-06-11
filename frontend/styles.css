@@ -685,6 +685,10 @@ a { color: var(--teal); }
 .kv:last-child { border-bottom: none; }
 .kv .kv-k { color: var(--muted); }
 .kv .kv-v { font-weight: 650; text-align: right; }
+/* "% of daily goal" suffix on a nutrition row — muted by default, green when
+   this single item is a meaningful slice (≥20%) of the day's target. */
+.kv .kv-v .kv-pct { font-weight: 600; color: var(--faint); }
+.kv .kv-v .kv-pct.good { color: var(--green); }
 
 /* Make a dashboard stat feel tappable. */
 .stat.tappable { cursor: pointer; transition: border-color .12s, transform .08s; }
