@@ -1,7 +1,13 @@
-"""Asclepius web app: upload Apple Health data and chat with your advisor."""
+"""Asclepius API: the backend for the iOS app and the local web app.
+
+Runs in two modes (see ``tenancy.py``): local single-user (the original
+private app — no auth, one DB) and multi-tenant (``ASCLEPIUS_MULTI_TENANT=1``
+— Sign in with Apple, per-user databases, HealthKit sync, APNs push).
+"""
 from __future__ import annotations
 
 import base64
+import datetime as _dt
 import os
 import tempfile
 from pathlib import Path
@@ -12,20 +18,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import (
     advisor,
     analytics,
+    auth,
     body_import,
+    config,
     notifications,
     parser,
     push,
     scheduler,
     store,
+    tenancy,
     tracking,
 )
 from .config import (
@@ -34,10 +43,64 @@ from .config import (
     GOAL_CATEGORIES,
     MANUAL_METRICS,
     MEALS,
+    QUANTITY_TYPES,
     WORKOUT_TYPES,
 )
 
-app = FastAPI(title="Asclepius", description="Personal Apple Health advisor")
+# Endpoints reachable without a bearer token in multi-tenant mode.
+PUBLIC_API_PATHS = {
+    "/api/health",
+    "/api/auth/apple",
+    "/api/auth/refresh",
+    "/api/auth/logout",
+    "/api/auth/dev",
+}
+
+
+async def auth_context(request: Request):
+    """App-wide dependency that binds the authenticated user to the request.
+
+    Local mode: does nothing — every endpoint behaves exactly as before.
+    Multi-tenant mode: requires ``Authorization: Bearer <access token>`` on
+    every /api route (except the public auth endpoints) and points all data
+    access at that user's own database for the duration of the request.
+    """
+    if not config.multi_tenant():
+        yield
+        return
+    path = request.url.path
+    if path in PUBLIC_API_PATHS or not path.startswith("/api"):
+        yield
+        return
+    authz = request.headers.get("authorization", "")
+    if not authz.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required.",
+                            headers={"WWW-Authenticate": "Bearer"})
+    try:
+        user = auth.verify_access_token(authz[7:].strip())
+    except auth.AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc),
+                            headers={"WWW-Authenticate": "Bearer"})
+    token = tenancy.set_current_user(user)
+    try:
+        try:
+            store.touch_activity()
+        except Exception:  # noqa: BLE001 - never block a request on bookkeeping
+            pass
+        yield
+    finally:
+        tenancy.reset_current_user(token)
+
+
+app = FastAPI(title="Asclepius", description="Personal Apple Health advisor",
+              dependencies=[Depends(auth_context)])
+
+
+def _require_current_user() -> dict:
+    user = tenancy.current_user()
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return user
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +108,7 @@ app = FastAPI(title="Asclepius", description="Personal Apple Health advisor")
 # ---------------------------------------------------------------------------
 @app.on_event("startup")
 def _startup() -> None:
-    """Boot the reminder scheduler once the server is up (no-op without VAPID)."""
+    """Boot the reminder scheduler once the server is up (no-op without push keys)."""
     scheduler.start()
 
 
@@ -56,17 +119,210 @@ def _shutdown() -> None:
 
 @app.middleware("http")
 async def _track_activity(request: Request, call_next):
-    """Stamp the last time the app talked to the API.
+    """Stamp the last time the app talked to the API (local mode only —
+    multi-tenant activity is stamped per user inside ``auth_context``).
 
     The notification scheduler reads this to suppress reminders while the app is
     open in the foreground (no point nudging someone already using it).
     """
-    if request.url.path.startswith("/api/"):
+    if request.url.path.startswith("/api/") and not config.multi_tenant():
         try:
             store.touch_activity()
         except Exception:  # noqa: BLE001 - never block a request on bookkeeping
             pass
     return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# Service health
+# ---------------------------------------------------------------------------
+@app.get("/api/health")
+def health() -> dict:
+    """Unauthenticated liveness probe for deployment platforms."""
+    return {"status": "ok", "multi_tenant": config.multi_tenant()}
+
+
+# ---------------------------------------------------------------------------
+# Auth & account
+# ---------------------------------------------------------------------------
+class AppleSignIn(BaseModel):
+    identity_token: str
+    full_name: str | None = None
+    email: str | None = None
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class DevSignIn(BaseModel):
+    email: str
+    name: str | None = None
+
+
+@app.post("/api/auth/apple")
+def auth_apple(req: AppleSignIn) -> dict:
+    """Sign in with Apple: verify the identity token, return our session pair."""
+    if not config.multi_tenant():
+        raise HTTPException(status_code=404, detail="Accounts are not enabled.")
+    try:
+        claims = auth.verify_apple_identity_token(req.identity_token)
+    except auth.AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    user = auth.upsert_apple_user(
+        claims["sub"],
+        email=req.email or claims.get("email"),
+        name=req.full_name)
+    return auth.create_session(user)
+
+
+@app.post("/api/auth/dev")
+def auth_dev(req: DevSignIn) -> dict:
+    """Email-only login for development and tests (ASCLEPIUS_DEV_LOGIN=1)."""
+    if not (config.multi_tenant() and config.dev_login_enabled()):
+        raise HTTPException(status_code=404, detail="Not found.")
+    email = (req.email or "").strip()
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="A valid email is required.")
+    return auth.create_session(auth.upsert_dev_user(email, req.name))
+
+
+@app.post("/api/auth/refresh")
+def auth_refresh(req: RefreshRequest) -> dict:
+    if not config.multi_tenant():
+        raise HTTPException(status_code=404, detail="Accounts are not enabled.")
+    try:
+        return auth.refresh_session(req.refresh_token)
+    except auth.AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+
+
+@app.post("/api/auth/logout")
+def auth_logout(req: RefreshRequest) -> dict:
+    if not config.multi_tenant():
+        raise HTTPException(status_code=404, detail="Accounts are not enabled.")
+    return {"status": "ok", "revoked": auth.revoke_refresh_token(req.refresh_token)}
+
+
+@app.get("/api/account")
+def account() -> dict:
+    user = _require_current_user()
+    return {"user": {"id": user["id"], "email": user["email"],
+                     "name": user["name"]},
+            "created_at": user.get("created_at")}
+
+
+@app.delete("/api/account")
+def delete_account() -> dict:
+    """Full account deletion (App Store requirement): auth rows + all health data."""
+    user = _require_current_user()
+    auth.delete_user(int(user["id"]))
+    return {"status": "deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Device push tokens (APNs)
+# ---------------------------------------------------------------------------
+class DeviceRegistration(BaseModel):
+    token: str
+    platform: str = "ios"
+    environment: str = "production"
+
+
+@app.post("/api/devices")
+def register_device(req: DeviceRegistration) -> dict:
+    user = _require_current_user()
+    if not req.token.strip():
+        raise HTTPException(status_code=400, detail="A device token is required.")
+    auth.register_device(int(user["id"]), req.token.strip(),
+                         platform=req.platform, environment=req.environment)
+    return {"status": "ok"}
+
+
+@app.delete("/api/devices/{token}")
+def unregister_device(token: str) -> dict:
+    user = _require_current_user()
+    return {"status": "ok",
+            "removed": auth.delete_device(token, user_id=int(user["id"]))}
+
+
+# ---------------------------------------------------------------------------
+# HealthKit sync (the iOS app's replacement for manual export uploads)
+# ---------------------------------------------------------------------------
+_HEALTHKIT_METRIC_KEYS = ({cfg["key"] for cfg in QUANTITY_TYPES.values()}
+                          | set(MANUAL_METRICS))
+_SYNC_MAX_ROWS = 20000
+
+
+class SyncMetric(BaseModel):
+    metric: str
+    date: str
+    value: float
+    min: float | None = None
+    max: float | None = None
+    count: int | None = None
+    unit: str | None = None
+
+
+class SyncSleep(BaseModel):
+    date: str
+    asleep_hours: float | None = None
+    in_bed_hours: float | None = None
+    rem_hours: float | None = None
+    deep_hours: float | None = None
+    core_hours: float | None = None
+    awake_hours: float | None = None
+
+
+class SyncWorkout(BaseModel):
+    external_id: str
+    date: str
+    activity: str = "Workout"
+    duration_min: float | None = None
+    distance_km: float | None = None
+    energy_kcal: float | None = None
+
+
+class HealthKitSync(BaseModel):
+    metrics: list[SyncMetric] = Field(default_factory=list)
+    sleep: list[SyncSleep] = Field(default_factory=list)
+    workouts: list[SyncWorkout] = Field(default_factory=list)
+
+
+def _valid_date(value: str) -> bool:
+    try:
+        _dt.date.fromisoformat(value)
+        return True
+    except ValueError:
+        return False
+
+
+@app.post("/api/sync/healthkit")
+def sync_healthkit(req: HealthKitSync) -> dict:
+    """Idempotent batched upsert of daily aggregates computed on-device.
+
+    Unknown metric keys and malformed dates are skipped (and counted) rather
+    than rejected, so an older server never breaks a newer app.
+    """
+    total = len(req.metrics) + len(req.sleep) + len(req.workouts)
+    if total > _SYNC_MAX_ROWS:
+        raise HTTPException(status_code=413,
+                            detail=f"Batch too large (max {_SYNC_MAX_ROWS} rows).")
+    metrics, skipped = [], 0
+    for m in req.metrics:
+        if m.metric in _HEALTHKIT_METRIC_KEYS and _valid_date(m.date):
+            metrics.append(m.model_dump())
+        else:
+            skipped += 1
+    sleep = [s.model_dump() for s in req.sleep if _valid_date(s.date)]
+    skipped += len(req.sleep) - len(sleep)
+    workouts = [w.model_dump() for w in req.workouts
+                if w.external_id.strip() and _valid_date(w.date)]
+    skipped += len(req.workouts) - len(workouts)
+
+    counts = store.upsert_healthkit(
+        {"metrics": metrics, "sleep": sleep, "workouts": workouts})
+    return {"status": "ok", "upserted": counts, "skipped": skipped}
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +447,20 @@ def sleep(days: int = 90) -> dict:
 # ---------------------------------------------------------------------------
 # Advisor chat
 # ---------------------------------------------------------------------------
+def _consume_coach_quota() -> None:
+    """Per-user daily budget of model-backed turns (multi-tenant mode only)."""
+    if not config.multi_tenant():
+        return
+    limit = config.chat_daily_limit()
+    key = f"coach_uses:{_dt.date.today().isoformat()}"
+    used = int(store.kv_get(key, default=0) or 0)
+    if used >= limit:
+        raise HTTPException(
+            status_code=429,
+            detail="You've reached today's coaching limit. It resets at midnight.")
+    store.kv_set(key, used + 1)
+
+
 class ChatMessage(BaseModel):
     role: str
     content: str
@@ -206,6 +476,7 @@ def chat(req: ChatRequest) -> dict:
     if not req.messages or req.messages[-1].role != "user":
         raise HTTPException(status_code=400, detail="Last message must be from the user.")
     user_text = req.messages[-1].content
+    _consume_coach_quota()
     # Ground the turn in the persisted conversation so the coach remembers prior
     # chats even across page reloads, then append the new user message.
     convo = store.recent_chat_messages(limit=40)
@@ -237,6 +508,7 @@ def clear_chat_history() -> dict:
 def briefing() -> dict:
     """Proactive opening briefing from the coach (also builds the initial plan)."""
     _require_data()
+    _consume_coach_quota()
     try:
         result = advisor.briefing()
     except advisor.AdvisorError as exc:
@@ -258,6 +530,7 @@ class Recommendation(BaseModel):
 @app.post("/api/recommend")
 def recommend(req: Recommendation) -> dict:
     _require_data()
+    _consume_coach_quota()
     try:
         result = advisor.recommend(req.topic)
     except advisor.AdvisorError as exc:
@@ -365,6 +638,7 @@ async def analyze_food(file: UploadFile) -> dict:
         raise HTTPException(status_code=400, detail="The photo was empty.")
     if len(raw) > 15 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="That photo is too large (max 15 MB).")
+    _consume_coach_quota()
     image_data = base64.standard_b64encode(raw).decode("utf-8")
     try:
         estimate = advisor.analyze_food_photo(image_data, media_type)

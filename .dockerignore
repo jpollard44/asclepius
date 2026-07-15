@@ -1,0 +1,10 @@
+.git
+.venv
+data
+ios
+docs
+tests
+*.xml
+*.zip
+.env
+__pycache__

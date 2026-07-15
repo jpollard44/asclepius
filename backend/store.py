@@ -12,6 +12,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+from . import tenancy
 from .config import COMMON_FOODS, DAILY_GOAL_METRICS, DB_PATH
 
 # Marker for rows that came from an Apple Health export. Anything the user types
@@ -60,9 +61,12 @@ CREATE TABLE IF NOT EXISTS workouts (
     exercises    TEXT,   -- JSON: [{name, sets:[{reps,weight}]}]
     notes        TEXT,
     source       TEXT NOT NULL DEFAULT 'apple',
-    created_at   TEXT
+    created_at   TEXT,
+    external_id  TEXT    -- HealthKit HKWorkout UUID for synced workouts
 );
 CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workouts_external
+    ON workouts(external_id) WHERE external_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS food_log (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,8 +220,18 @@ CREATE INDEX IF NOT EXISTS idx_notif_sent ON notification_log(sent_at);
 """
 
 
+def resolve_db_path(db_path: Path | None = None) -> Path:
+    """The database this operation targets.
+
+    Precedence: an explicit ``db_path`` argument, then the request's bound
+    user in multi-tenant mode (see ``tenancy.py``), then the local-mode
+    ``DB_PATH`` (read from the module attribute so tests can monkeypatch it).
+    """
+    return Path(db_path or tenancy.current_db_path() or DB_PATH)
+
+
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path or DB_PATH)
+    conn = sqlite3.connect(resolve_db_path(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -269,9 +283,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
             ("notes", "TEXT"),
             ("source", f"TEXT NOT NULL DEFAULT '{SOURCE_IMPORT}'"),
             ("created_at", "TEXT"),
+            ("external_id", "TEXT"),
         ):
             if col not in wcols:
                 conn.execute(f"ALTER TABLE workouts ADD COLUMN {col} {ddl}")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_workouts_external "
+            "ON workouts(external_id) WHERE external_id IS NOT NULL")
 
     # Persistent coach chat history is newer than the first builds. init_db runs
     # SCHEMA (CREATE IF NOT EXISTS) before this, so the table normally already
@@ -294,7 +312,10 @@ def init_db(db_path: Path | None = None) -> None:
         conn.executescript(SCHEMA)
         _migrate(conn)
         _seed_foods(conn)
-        _seed_favorites(conn)
+        # The starter favorites are the local owner's personal staples — they
+        # make sense on a private install but not in a fresh public account.
+        if tenancy.current_user() is None:
+            _seed_favorites(conn)
 
 
 def _now() -> str:
@@ -353,6 +374,64 @@ def replace_data(parsed: dict, db_path: Path | None = None) -> dict:
         "sleep_nights": len(parsed["sleep"]),
         "workouts": len(parsed["workouts"]),
     }
+
+
+def upsert_healthkit(payload: dict, db_path: Path | None = None) -> dict:
+    """Merge a batch of HealthKit daily aggregates synced from the iOS app.
+
+    Unlike ``replace_data`` (a full export swap), sync batches are incremental
+    and idempotent: daily metrics and sleep upsert on their natural keys, and
+    workouts dedupe on the HKWorkout UUID the app sends as ``external_id``.
+    Rows are stored with source='apple', same as an export import, so the
+    whole analytics layer treats synced and imported data identically.
+    """
+    init_db(db_path)
+    metrics = payload.get("metrics") or []
+    sleep = payload.get("sleep") or []
+    workouts = payload.get("workouts") or []
+    now = _now()
+    with connect(db_path) as conn:
+        for m in metrics:
+            conn.execute(
+                "INSERT INTO daily_metrics (metric, date, value, min, max, count, unit, source) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(metric, date) DO UPDATE SET value=excluded.value, "
+                "min=excluded.min, max=excluded.max, count=excluded.count, "
+                "unit=excluded.unit, source=excluded.source",
+                (m["metric"], m["date"], float(m["value"]), m.get("min"),
+                 m.get("max"), m.get("count"), m.get("unit"), SOURCE_IMPORT))
+        for s in sleep:
+            conn.execute(
+                "INSERT INTO sleep (date, asleep_hours, in_bed_hours, rem_hours, "
+                " deep_hours, core_hours, awake_hours, source) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(date) DO UPDATE SET asleep_hours=excluded.asleep_hours, "
+                "in_bed_hours=excluded.in_bed_hours, rem_hours=excluded.rem_hours, "
+                "deep_hours=excluded.deep_hours, core_hours=excluded.core_hours, "
+                "awake_hours=excluded.awake_hours, source=excluded.source",
+                (s["date"], s.get("asleep_hours"), s.get("in_bed_hours"),
+                 s.get("rem_hours"), s.get("deep_hours"), s.get("core_hours"),
+                 s.get("awake_hours"), SOURCE_IMPORT))
+        for w in workouts:
+            conn.execute(
+                "INSERT INTO workouts (date, activity, type, duration_min, "
+                " distance_km, energy_kcal, source, created_at, external_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(external_id) WHERE external_id IS NOT NULL "
+                "DO UPDATE SET date=excluded.date, "
+                "activity=excluded.activity, duration_min=excluded.duration_min, "
+                "distance_km=excluded.distance_km, energy_kcal=excluded.energy_kcal",
+                (w["date"], w.get("activity") or "Workout",
+                 w.get("type") or "cardio", w.get("duration_min"),
+                 w.get("distance_km"), w.get("energy_kcal"), SOURCE_IMPORT,
+                 now, w["external_id"]))
+        # Track the sync watermark so /api/status can report freshness.
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('last_sync', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (json.dumps(now),))
+    return {"metrics": len(metrics), "sleep": len(sleep),
+            "workouts": len(workouts)}
 
 
 def has_data(db_path: Path | None = None) -> bool:

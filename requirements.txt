@@ -8,3 +8,4 @@ python-dotenv>=1.0   # load .env on startup regardless of how the server is laun
 openpyxl>=3.1   # reading smart-scale body-composition .xlsx exports
 pywebpush>=2.0   # VAPID-signed web push to PWA subscriptions
 APScheduler>=3.10   # background scheduling of health reminders
+httpx[http2]>=0.27   # APNs (HTTP/2) push delivery to the iOS app

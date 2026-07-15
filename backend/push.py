@@ -17,7 +17,7 @@ import logging
 
 from pywebpush import WebPushException, webpush
 
-from . import store
+from . import apns, store, tenancy
 from .config import VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY, VAPID_SUBJECT
 
 log = logging.getLogger("asclepius.push")
@@ -31,6 +31,11 @@ _TTL = 24 * 60 * 60
 def enabled() -> bool:
     """True when a VAPID keypair is configured and push can actually be sent."""
     return bool(VAPID_PRIVATE_KEY and VAPID_PUBLIC_KEY)
+
+
+def any_channel_enabled() -> bool:
+    """True when at least one delivery channel (web push or APNs) works."""
+    return enabled() or apns.enabled()
 
 
 def public_key() -> str:
@@ -114,19 +119,36 @@ def _send_one(subscription: dict, payload: str) -> bool:
 
 
 def send_to_all(title: str, body: str, **opts) -> dict:
-    """Send one notification to every stored subscription.
+    """Send one notification to every device the current user has.
 
-    Returns {"sent": n, "failed": m, "subscriptions": total}. Does nothing (and
-    reports it) when push is disabled or there are no subscribers.
+    Fans out over both channels: web-push subscriptions (stored in the
+    tenant's own DB) and, when a user is bound to the context, their APNs
+    device tokens. Returns combined counts. Does nothing (and reports it)
+    when no channel is configured or there is nothing to send to.
     """
-    if not enabled():
+    if not any_channel_enabled():
         return {"sent": 0, "failed": 0, "subscriptions": 0, "disabled": True}
-    subs = store.list_push_subscriptions()
-    if not subs:
-        return {"sent": 0, "failed": 0, "subscriptions": 0}
-    payload = build_payload(title, body, **opts)
-    sent = sum(1 for s in subs if _send_one(s, payload))
-    return {"sent": sent, "failed": len(subs) - sent, "subscriptions": len(subs)}
+
+    sent = failed = targets = 0
+    if enabled():
+        subs = store.list_push_subscriptions()
+        if subs:
+            payload = build_payload(title, body, **opts)
+            ok = sum(1 for s in subs if _send_one(s, payload))
+            sent += ok
+            failed += len(subs) - ok
+            targets += len(subs)
+
+    user_id = tenancy.current_user_id()
+    if user_id is not None and apns.enabled():
+        apns_opts = {k: v for k, v in opts.items()
+                     if k in ("ntype", "url", "tag", "data")}
+        result = apns.send_to_user(user_id, title, body, **apns_opts)
+        sent += result.get("sent", 0)
+        failed += result.get("failed", 0)
+        targets += result.get("devices", 0)
+
+    return {"sent": sent, "failed": failed, "subscriptions": targets}
 
 
 def send_test(db_path=None) -> dict:
