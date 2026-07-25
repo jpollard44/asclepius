@@ -303,6 +303,47 @@ def _weekly_message(db_path=None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Multi-tenant scheduling support
+# ---------------------------------------------------------------------------
+def due_types(now: _dt.datetime, prefs: dict,
+              window_min: int = 5) -> list[str]:
+    """Reminder types whose scheduled time fell inside the last ``window_min``
+    minutes, per this user's preferences.
+
+    This powers the multi-tenant tick scheduler: instead of one cron job per
+    type (impossible when every user has their own times), a single job runs
+    every few minutes, asks this per user, and lets ``fire``'s dedup log
+    guarantee at-most-once delivery even if windows overlap.
+    """
+    def _within(h: int, m: int) -> bool:
+        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        delta = (now - target).total_seconds()
+        return 0 <= delta < window_min * 60
+
+    def _pref_time(key: str, field: str = "time") -> tuple[int, int]:
+        fallback = (NOTIFICATION_TYPES[key].get(field)
+                    or NOTIFICATION_TYPES[key].get("time") or "09:00")
+        return _parse_hhmm(prefs["types"].get(key, {}).get(field) or "", fallback)
+
+    due: list[str] = []
+    for meal in ("breakfast", "lunch", "dinner"):
+        if _within(*_pref_time(meal)):
+            due.append(meal)
+    if any(_within(h, 0) for h in range(WATER_REMINDER_START_HOUR,
+                                        WATER_REMINDER_END_HOUR + 1, 2)):
+        due.append("water")
+    weekend = now.weekday() >= 5
+    if _within(*_pref_time("workout", "time_weekend" if weekend else "time")):
+        due.append("workout")
+    for key in ("sleep", "coach"):
+        if _within(*_pref_time(key)):
+            due.append(key)
+    if now.weekday() == 6 and _within(*_pref_time("weekly")):
+        due.append("weekly")
+    return due
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 def fire(ntype: str, *, force: bool = False, db_path=None) -> dict:

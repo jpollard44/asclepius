@@ -12,15 +12,20 @@ not it's currently enabled, because the enable check happens at fire time. Only 
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
-from . import notifications, push
+from . import config, notifications, push, tenancy
 from .config import WATER_REMINDER_END_HOUR, WATER_REMINDER_START_HOUR
 
 log = logging.getLogger("asclepius.scheduler")
+
+# How often the multi-tenant tick sweeps all users for due reminders.
+_TICK_MINUTES = 5
 
 _scheduler: BackgroundScheduler | None = None
 
@@ -75,23 +80,63 @@ def _build_jobs(scheduler: BackgroundScheduler) -> None:
     log.info("Scheduled %d reminder jobs", len(scheduler.get_jobs()))
 
 
+def _tick() -> None:
+    """Multi-tenant sweep: fire every reminder that just came due, per user.
+
+    Users have individual reminder times, so instead of per-type cron jobs we
+    run this every few minutes and check each user's preferences. The
+    notification dedup log makes delivery at-most-once regardless of window
+    overlap, and per-user isolation means one user's failure never blocks the
+    rest.
+    """
+    from . import auth  # deferred: auth is irrelevant in local mode
+
+    now = _dt.datetime.now()
+    for user_id in auth.list_user_ids():
+        user = {"id": user_id}
+        token = tenancy.set_current_user(user)
+        try:
+            prefs = notifications.get_prefs()
+            if not prefs.get("enabled", True):
+                continue
+            for ntype in notifications.due_types(now, prefs,
+                                                 window_min=_TICK_MINUTES):
+                notifications.fire(ntype)
+        except Exception:  # noqa: BLE001 - one bad tenant must not stop the sweep
+            log.exception("Reminder sweep failed for user %s", user_id)
+        finally:
+            tenancy.reset_current_user(token)
+
+
 def start() -> None:
     """Start the scheduler. No-op if push is disabled or already running."""
     global _scheduler
-    if not push.enabled():
-        log.info("Push disabled (no VAPID key) — scheduler not started.")
+    if not push.any_channel_enabled():
+        log.info("Push disabled (no VAPID or APNs keys) — scheduler not started.")
         return
     if _scheduler and _scheduler.running:
         return
     _scheduler = BackgroundScheduler(job_defaults=_JOB_DEFAULTS)
-    _build_jobs(_scheduler)
+    if config.multi_tenant():
+        _scheduler.add_job(_tick, trigger=IntervalTrigger(minutes=_TICK_MINUTES),
+                           id="tick", replace_existing=True)
+        log.info("Multi-tenant reminder sweep scheduled every %d min.",
+                 _TICK_MINUTES)
+    else:
+        _build_jobs(_scheduler)
     _scheduler.start()
     log.info("Notification scheduler started.")
 
 
 def reschedule_all() -> None:
-    """Rebuild every job from current preferences (call after a prefs change)."""
+    """Rebuild every job from current preferences (call after a prefs change).
+
+    In multi-tenant mode this is a no-op: the tick reads each user's live
+    preferences on every sweep, so time changes take effect automatically.
+    """
     if not _scheduler or not _scheduler.running:
+        return
+    if config.multi_tenant():
         return
     _build_jobs(_scheduler)
     log.info("Reminder jobs rescheduled from updated preferences.")

@@ -173,6 +173,62 @@ DAILY_GOAL_METRICS = {
 }
 
 # ---------------------------------------------------------------------------
+# Multi-tenant service mode (the public iOS app backend)
+# ---------------------------------------------------------------------------
+# Read at call time (not import time) so tests can flip modes with
+# monkeypatch.setenv and so a process manager can decide the mode via env.
+def _flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def multi_tenant() -> bool:
+    """True when running as the public service: auth required, per-user DBs."""
+    return _flag("ASCLEPIUS_MULTI_TENANT")
+
+
+def dev_login_enabled() -> bool:
+    """Email-only login for development/tests. Never enable in production."""
+    return _flag("ASCLEPIUS_DEV_LOGIN")
+
+
+# The iOS app's bundle identifier — the audience of Apple identity tokens and
+# the APNs topic.
+def apple_bundle_id() -> str:
+    return os.environ.get("ASCLEPIUS_APPLE_BUNDLE_ID", "com.asclepius.app")
+
+
+# Lifetimes for our own session tokens.
+ACCESS_TOKEN_TTL_SEC = int(os.environ.get("ASCLEPIUS_ACCESS_TTL", 60 * 60))
+REFRESH_TOKEN_TTL_SEC = int(os.environ.get("ASCLEPIUS_REFRESH_TTL",
+                                           180 * 24 * 60 * 60))
+
+# Per-user daily budget of coach turns (chat + briefing + recommend) in
+# multi-tenant mode, so one user can't drain the service's Anthropic quota.
+def chat_daily_limit() -> int:
+    try:
+        return int(os.environ.get("ASCLEPIUS_CHAT_DAILY_LIMIT", 60))
+    except ValueError:
+        return 60
+
+
+# ---------------------------------------------------------------------------
+# APNs (native iOS push) — token-based auth. All optional; without a key the
+# app falls back to web push only.
+# ---------------------------------------------------------------------------
+def apns_config() -> dict:
+    """APNs credentials from the environment, read at call time.
+
+    ``APNS_KEY`` may be the PEM content of the .p8 key or a path to it.
+    """
+    return {
+        "key": os.environ.get("APNS_KEY", ""),
+        "key_id": os.environ.get("APNS_KEY_ID", ""),
+        "team_id": os.environ.get("APNS_TEAM_ID", ""),
+        "topic": os.environ.get("APNS_TOPIC", apple_bundle_id()),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Web push notifications
 # ---------------------------------------------------------------------------
 # VAPID keypair (generate with scripts/gen_vapid.py, stored in .env). Without a

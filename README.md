@@ -1,10 +1,20 @@
 # Asclepius — your personal AI health coach
 
-Asclepius is a **private, local** web app that turns your own Apple Health
-export into a proactive AI health **coach** (powered by Claude). It reads your
-real data, tells you what matters, builds you a concrete plan, and coaches you
-toward the optimal version of yourself — across **sleep, activity & fitness,
-heart health, and body & vitals**.
+Asclepius turns your Apple Health data into a proactive AI health **coach**
+(powered by Claude). It reads your real data, tells you what matters, builds
+you a concrete plan, and coaches you toward the optimal version of yourself —
+across **sleep, activity & fitness, heart health, and body & vitals**.
+
+It ships in two forms from this one codebase:
+
+- **The iOS app** (`ios/`): a native SwiftUI app that reads HealthKit
+  directly (no manual exports), signs in with Apple, and talks to the
+  multi-tenant Asclepius service. See `ios/README.md`,
+  `docs/DEPLOYMENT.md` (running the service) and `docs/APP_STORE.md`
+  (shipping it).
+- **The private local app**: the original single-user web app — everything
+  runs on your machine with your own Anthropic API key. The rest of this
+  README describes this mode.
 
 It's agent-first: the whole experience is a conversation with a coach plus a
 **living plan** it maintains for you — not a metrics dashboard (you already have
@@ -72,14 +82,19 @@ Upload `data/sample_export.xml` in the app.
 backend/
   config.py      Metric definitions (HK types → friendly keys, units, areas)
   parser.py      Streaming iterparse of export.xml → daily aggregates
-  store.py       SQLite persistence (data + the living plan)
+  store.py       SQLite persistence (data + the living plan + HealthKit sync)
   analytics.py   Trends, summaries, time series the coach reasons over
   advisor.py     The coach: Claude tool-use loop + plan tools + briefing
+  auth.py        Accounts: Sign in with Apple, sessions, device tokens
+  tenancy.py     Per-user database isolation for multi-tenant mode
+  apns.py        Native iOS push (APNs over HTTP/2)
   main.py        FastAPI app + static frontend
 frontend/        Single-page coach: conversation + plan panel (vanilla JS)
   vendor/        Locally-served marked.js (no runtime CDN)
+ios/             Native SwiftUI iOS app (XcodeGen project)
+docs/            Deployment, App Store, and privacy-policy docs
 scripts/         Synthetic-data generator
-tests/           Pipeline tests
+tests/           Pipeline + multi-tenant API tests
 ```
 
 - **Backend**: FastAPI + SQLite (no heavy data deps).
@@ -99,6 +114,10 @@ tests/           Pipeline tests
 | `ASCLEPIUS_MODEL`   | `claude-opus-4-8`    | Advisor model                    |
 | `ASCLEPIUS_DB`      | `./data/health.db`   | SQLite location                  |
 | `PORT`              | `8765`               | Server port                      |
+
+Multi-tenant service mode (the iOS app backend) is enabled with
+`ASCLEPIUS_MULTI_TENANT=1` — see `.env.example` for its variables and
+`docs/DEPLOYMENT.md` for the full story.
 
 ## Privacy
 
